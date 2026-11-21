@@ -1,0 +1,21 @@
+{
+  "name": "d3m3nk0",
+  "version": "0.1.0",
+  "private": true,
+  "description": "d3m3nk0 — desktop coding agent",
+  "main": "src/main/main.js",
+  "scripts": {
+    "start": "electron .",
+    "cli": "node cli.js",
+    "test": "node test/smoke.js",
+    "test:mcp": "node test/mcp-smoke.js"
+  },
+  "license": "MIT",
+  "dependencies": {
+    "@modelcontextprotocol/sdk": "^1.32.2",
+    "zod": "^4.6.7"
+  },
+  "devDependencies": {
+    "electron": "^45.4.1"
+  }
+}
