@@ -23,7 +23,7 @@ const HOME = path.join(TMP_ROOT, 'home');
 fs.mkdirSync(HOME, { recursive: true });
 process.env.D3M3NK0_HOME = HOME; // до require ядра: config.js читает его при загрузке
 
-const { startFakeLlm, STREAM_CHUNKS, WHOLE_TEXT } = require('./helpers/fake-llm');
+const { startFakeLlm, STREAM_CHUNKS, WHOLE_TEXT, AFTER_TOOL_TEXT } = require('./helpers/fake-llm');
 const { loadConfig } = require('../src/core/config');
 const { Session } = require('../src/core/session');
 const { Agent } = require('../src/core/agent');
@@ -206,6 +206,48 @@ async function main() {
     });
     await check('обрыв посреди генерации: CLI жив и выходит с кодом 0', () => {
       assert.strictEqual(texts[1], STREAM_CHUNKS.join(''));
+      assert.strictEqual(r.exit, 0);
+    });
+  }
+
+  {
+    // Ctrl+C на «Разрешить …? [y/N]» — это отказ от одного вызова, а не «Стоп»
+    // всего хода: модель должна получить отказ и продолжить.
+    const home = makeHome('confirm', llm.url('stream'), { permissionMode: 'ask' });
+    const r = await runCli(home, [
+      { after: PROMPT, delay: 100, send: 'запиши файл\r' },
+      { after: 'Разрешить write_file', delay: 200, send: CTRL_C },
+      { after: promptAfter('Продолжаю после инструмента'), delay: 100, send: CTRL_C },
+    ]);
+    const messages = journal(home);
+    const results = messages.flatMap((m) => m.blocks).filter((b) => b.type === 'tool_result');
+    await check('Ctrl+C на подтверждении: вызов отклонён, файл не создан', () => {
+      assert.ok(!r.timedOut, 'CLI завис');
+      assert.match(r.out, /✗ write_file: отклонено пользователем/);
+      assert.strictEqual(results.length, 1);
+      assert.ok(results[0].is_error && /отклонил/.test(results[0].content), 'отказ не записан в журнал');
+      assert.ok(!fs.existsSync(path.join(home, 'work', 'denied.txt')), 'файл создан, хотя вызов отклонён');
+    });
+    await check('Ctrl+C на подтверждении: следующий запрос модели проходит, а не aborted', () => {
+      assert.doesNotMatch(r.out, /Сеть недоступна|aborted|прервано/, 'прерывание утекло в следующий запрос');
+      assert.deepStrictEqual(assistantTexts(messages).filter(Boolean), [AFTER_TOOL_TEXT]);
+      assert.strictEqual(r.exit, 0);
+    });
+  }
+
+  {
+    // «Стоп» до первого байта ответа: fetch() отменён — это прерывание, а не сбой сети.
+    const home = makeHome('abort-wait', llm.url('stream'));
+    const r = await runCli(home, [
+      { after: PROMPT, delay: 100, send: 'жди\r' },
+      { after: 'жди', delay: 500, send: CTRL_C },
+      { after: PROMPT, delay: 100, send: 'привет\r' },
+      { after: promptAfter('третий кусок\\.'), delay: 100, send: CTRL_C },
+    ]);
+    await check('Стоп до ответа сервера: не «Сеть недоступна», CLI жив', () => {
+      assert.ok(!r.timedOut, 'CLI завис');
+      assert.doesNotMatch(r.out, /Сеть недоступна/, 'отмена показана как сетевой сбой');
+      assert.deepStrictEqual(assistantTexts(journal(home)), [STREAM_CHUNKS.join('')]);
       assert.strictEqual(r.exit, 0);
     });
   }

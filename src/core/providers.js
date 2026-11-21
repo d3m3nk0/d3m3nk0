@@ -42,6 +42,9 @@ async function endpointRequest(url, init) {
   try {
     return await fetch(url, init);
   } catch (e) {
+    // Отмена (Стоп / Ctrl+C) — не сетевой сбой: пробрасываем как есть, чтобы
+    // агент показал «[прервано пользователем]», а не «Сеть недоступна».
+    if (e.name === 'AbortError' || init?.signal?.aborted) throw e;
     const cause = e.cause;
     const detail = cause ? cause.code || cause.message || String(cause) : e.message;
     const hint =

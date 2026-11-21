@@ -85,11 +85,18 @@ async function main() {
   const agent = new Agent({ config, session, mcp, emit, askPermission });
 
   // Ctrl+C во время генерации — «Стоп»: запрос прерывается, полученный текст
-  // сохраняется. Ctrl+C без активного запроса — выход, как раньше.
+  // сохраняется. Ctrl+C на «Разрешить …? [y/N]» — отказ от этого вызова, ход
+  // продолжается. Ctrl+C без активного запроса — выход, как раньше.
   const onInterrupt = () => {
     if (agent.busy) {
-      questionAbort?.abort(); // висит запрос разрешения — снимаем его как отказ
-      agent.abort();
+      if (questionAbort) {
+        // Висит запрос разрешения: снимаем только его. agent.abort() здесь не
+        // нужен — его сигнал живёт до конца send(), и следующий запрос модели
+        // (с отказом инструмента) упал бы с AbortError.
+        questionAbort.abort();
+      } else {
+        agent.abort();
+      }
       return;
     }
     // Покой: делаем то же, что readline делает сам, когда своего обработчика нет, —

@@ -10,7 +10,11 @@
  *                       запрос без stream — обычный JSON
  *       /json/v1      — stream: true молча игнорируется, ответ — обычный JSON
  *       /stream/v1    — SSE (по умолчанию)
- *   - для SSE по тексту последнего сообщения пользователя:
+ *   - для SSE:
+ *       последнее сообщение — результат инструмента (role: tool) — AFTER_TOOL_TEXT
+ *     иначе по тексту последнего сообщения пользователя:
+ *       содержит «запиши» — вызов write_file (требует подтверждения в режиме ask)
+ *       содержит «жди»    — пауза headerDelayMs до заголовков, потом обычный ответ
  *       содержит «долго»  — длинный поток (slowChunks кусков), для «Стоп»
  *       содержит «оборви» — несколько кусков и обрыв соединения
  *       иначе             — короткий ответ из STREAM_CHUNKS
@@ -23,6 +27,8 @@ const http = require('node:http');
 
 const STREAM_CHUNKS = ['Первый ', 'кусок, ', 'второй ', 'кусок, ', 'третий кусок.'];
 const WHOLE_TEXT = 'Ответ целиком без стриминга.';
+const AFTER_TOOL_TEXT = 'Продолжаю после инструмента.';
+const WRITE_CALL = { name: 'write_file', arguments: JSON.stringify({ path: 'denied.txt', content: 'не должно появиться' }) };
 
 const sse = (o) => `data: ${JSON.stringify(o)}\n\n`;
 const delta = (content) => sse({ choices: [{ index: 0, delta: { content } }] });
@@ -40,12 +46,14 @@ function lastUserText(payload) {
  * @param {number} [opts.slowChunks=60]    сколько кусков в длинном ответе
  * @param {number} [opts.slowDelayMs=300]  пауза между кусками длинного ответа
  * @param {number} [opts.cutAfter=3]       сколько кусков до обрыва соединения
+ * @param {number} [opts.headerDelayMs=1500] пауза до заголовков в режиме «жди»
  */
 function startFakeLlm(opts = {}) {
   const chunkDelayMs = opts.chunkDelayMs ?? 300;
   const slowChunks = opts.slowChunks ?? 60;
   const slowDelayMs = opts.slowDelayMs ?? 300;
   const cutAfter = opts.cutAfter ?? 3;
+  const headerDelayMs = opts.headerDelayMs ?? 1500;
   const requests = [];
 
   const server = http.createServer(async (req, res) => {
@@ -69,11 +77,29 @@ function startFakeLlm(opts = {}) {
     }
     if (mode === 'json') return whole();
 
-    res.writeHead(200, { 'content-type': 'text/event-stream' });
     const text = lastUserText(payload);
+    // «жди» — сервер молчит до заголовков: «Стоп» попадает в ожидание fetch().
+    if (/жди/.test(text)) await sleep(headerDelayMs);
+    if (res.destroyed) return;
+    res.writeHead(200, { 'content-type': 'text/event-stream' });
     // Клиент мог уйти (Стоп) — дальше не пишем.
     const alive = () => !res.destroyed && !res.writableEnded;
+    const msgs = payload.messages || [];
+    const done = () => {
+      res.write('data: [DONE]\n\n');
+      res.end();
+    };
 
+    // После результата инструмента (в том числе отказа) модель продолжает ход текстом.
+    if (msgs[msgs.length - 1]?.role === 'tool') {
+      res.write(delta(AFTER_TOOL_TEXT));
+      return done();
+    }
+    if (/запиши/.test(text)) {
+      res.write(sse({ choices: [{ index: 0, delta: { tool_calls: [{ index: 0, id: 'call_write', type: 'function', function: WRITE_CALL }] } }] }));
+      res.write(sse({ choices: [{ index: 0, delta: {}, finish_reason: 'tool_calls' }] }));
+      return done();
+    }
     if (/оборви/.test(text)) {
       for (let i = 0; i < cutAfter && alive(); i++) {
         res.write(delta(`часть${i + 1} `));
@@ -112,4 +138,4 @@ function startFakeLlm(opts = {}) {
   });
 }
 
-module.exports = { startFakeLlm, STREAM_CHUNKS, WHOLE_TEXT };
+module.exports = { startFakeLlm, STREAM_CHUNKS, WHOLE_TEXT, AFTER_TOOL_TEXT };
