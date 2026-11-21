@@ -38,7 +38,38 @@ function askPermission(req) {
   });
 }
 
-async function buildAgent({ history = [] } = {}) {
+/**
+ * Промис идущей сборки агента. Сборка переподключает MCP-серверы и длится
+ * секунды; два параллельных прогона дают двойное подключение и затирают
+ * друг другу записи в McpManager. Поэтому сборки выстраиваются в очередь.
+ */
+let building = null;
+
+/**
+ * Собрать агента.
+ *  - buildAgent()          — «нужен готовый агент»: если сборка уже идёт,
+ *                            присоединиться к ней, а не запускать вторую.
+ *  - buildAgent({history}) — явная пересборка (настройки, новая/загруженная
+ *                            сессия): ждёт предыдущую и выполняется после неё.
+ */
+function buildAgent(opts) {
+  if (building && opts === undefined) return building;
+
+  const prev = building;
+  const run = (async () => {
+    if (prev) await prev.catch(() => {}); // ошибка прошлой сборки не блокирует новую
+    return doBuildAgent(opts);
+  })();
+
+  building = run;
+  run.then(
+    () => { if (building === run) building = null; },
+    () => { if (building === run) building = null; }
+  );
+  return run;
+}
+
+async function doBuildAgent({ history = [] } = {}) {
   agent?.abort();
   await mcp.closeAll();
   const report = await mcp.connectAll(config.mcpServers);
@@ -218,6 +249,7 @@ ipcMain.handle('session:load', async (_e, id) => {
 });
 
 ipcMain.handle('agent:send', async (_e, text) => {
+  // Если стартовая сборка ещё идёт, buildAgent() дождётся её, а не начнёт новую.
   if (!agent) await buildAgent();
   agent.send(text).catch((e) => emit({ type: 'error', message: String(e.message || e) }));
   return { ok: true };

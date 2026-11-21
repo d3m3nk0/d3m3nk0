@@ -16,9 +16,25 @@ class McpManager {
     this.servers = new Map(); // name -> { client, tools: [{name, description, input_schema}] }
   }
 
+  /** Закрыть и забыть сервер, если он подключён. Ошибки закрытия не важны. */
+  async disconnect(name) {
+    const old = this.servers.get(name);
+    if (!old) return;
+    this.servers.delete(name);
+    try {
+      await old.client.close();
+    } catch {
+      // сервер мог уже умереть
+    }
+  }
+
   async connect(name, cfg) {
     const { Client } = await import('@modelcontextprotocol/sdk/client/index.js');
     const { StdioClientTransport } = await import('@modelcontextprotocol/sdk/client/stdio.js');
+
+    // Повторное подключение под тем же именем не должно оставлять старый
+    // процесс без ссылки: closeAll() его бы уже не нашёл.
+    await this.disconnect(name);
 
     const transport = new StdioClientTransport({
       command: cfg.command,
@@ -28,8 +44,16 @@ class McpManager {
       stderr: 'pipe',
     });
     const client = new Client({ name: 'd3m3nk0', version: '0.1.0' }, { capabilities: {} });
-    await client.connect(transport);
-    const listed = await client.listTools();
+    let listed;
+    try {
+      await client.connect(transport);
+      listed = await client.listTools();
+    } catch (e) {
+      // Процесс сервера мог уже запуститься. В servers он ещё не попал,
+      // поэтому closeAll() о нём не узнает — закрываем здесь.
+      await client.close().catch(() => {});
+      throw e;
+    }
 
     // Сервер может отдавать сотни инструментов, а они уходят в каждый запрос
     // к модели и съедают контекст (у REA это ~82 000 токенов на 263 схемы).
