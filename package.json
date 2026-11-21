@@ -8,7 +8,8 @@
     "start": "node scripts/launch.js app",
     "cli": "node scripts/launch.js cli",
     "test": "node test/smoke.js",
-    "test:mcp": "node test/mcp-smoke.js"
+    "test:mcp": "node test/mcp-smoke.js",
+    "test:regression": "node test/regression.js"
   },
   "license": "MIT",
   "dependencies": {
