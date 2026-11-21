@@ -30,13 +30,22 @@ class McpManager {
     const client = new Client({ name: 'd3m3nk0', version: '0.1.0' }, { capabilities: {} });
     await client.connect(transport);
     const listed = await client.listTools();
-    const tools = (listed.tools || []).map((t) => ({
-      name: `mcp__${name}__${t.name}`,
-      rawName: t.name,
-      description: t.description || '',
-      input_schema: t.inputSchema || { type: 'object', properties: {} },
-    }));
-    this.servers.set(name, { client, tools });
+
+    // Сервер может отдавать сотни инструментов, а они уходят в каждый запрос
+    // к модели и съедают контекст (у REA это ~82 000 токенов на 263 схемы).
+    // Поэтому набор можно ограничить: tools — белый список, exclude — чёрный.
+    const allow = Array.isArray(cfg.tools) && cfg.tools.length ? new Set(cfg.tools) : null;
+    const deny = new Set(cfg.exclude || []);
+
+    const tools = (listed.tools || [])
+      .filter((t) => (!allow || allow.has(t.name)) && !deny.has(t.name))
+      .map((t) => ({
+        name: `mcp__${name}__${t.name}`,
+        rawName: t.name,
+        description: t.description || '',
+        input_schema: t.inputSchema || { type: 'object', properties: {} },
+      }));
+    this.servers.set(name, { client, tools, total: (listed.tools || []).length });
     return tools;
   }
 
@@ -46,7 +55,9 @@ class McpManager {
       if (!cfg || cfg.disabled) continue;
       try {
         const tools = await this.connect(name, cfg);
-        report.push({ server: name, ok: true, tools: tools.length });
+        const total = this.servers.get(name)?.total ?? tools.length;
+        const chars = JSON.stringify(tools).length;
+        report.push({ server: name, ok: true, tools: tools.length, total, chars });
       } catch (e) {
         report.push({ server: name, ok: false, error: String(e.message || e) });
       }

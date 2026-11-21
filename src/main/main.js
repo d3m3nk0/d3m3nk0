@@ -43,11 +43,17 @@ async function buildAgent({ history = [] } = {}) {
   await mcp.closeAll();
   const report = await mcp.connectAll(config.mcpServers);
   for (const r of report) {
-    emit(
-      r.ok
-        ? { type: 'info', message: `MCP ${r.server}: подключён, инструментов ${r.tools}` }
-        : { type: 'info', message: `MCP ${r.server}: ошибка — ${r.error}` }
-    );
+    if (!r.ok) {
+      emit({ type: 'info', message: `MCP ${r.server}: ошибка — ${r.error}` });
+      continue;
+    }
+    const kTokens = Math.ceil(r.chars / 4 / 1000);
+    emit({
+      type: 'info',
+      message:
+        `MCP ${r.server}: ${r.tools} из ${r.total} инструментов (~${kTokens}k токенов)` +
+        (kTokens > 40 ? ' — много, ограничьте набор через "tools" в настройках' : ''),
+    });
   }
   agent = new Agent({ config, session, mcp, emit, askPermission });
   agent.loadHistory(history);
@@ -76,15 +82,51 @@ function createWindow() {
   });
 }
 
+/** Выполнить fn, когда страница уже загружена (или сразу, если загрузка прошла). */
+function onRendererReady(fn) {
+  if (win.webContents.isLoading()) win.webContents.once('did-finish-load', fn);
+  else fn();
+}
+
 app.whenReady().then(async () => {
   createWindow();
-  await buildAgent();
 
-  if (process.env.D3M3NK0_SCREENSHOT) {
+  // Обработчики регистрируются до buildAgent(): подключение MCP занимает
+  // секунды, и окно успевает загрузиться раньше, теряя событие.
+  const screenshotTo = process.env.D3M3NK0_SCREENSHOT;
+  const smoke = !!process.env.D3M3NK0_SMOKE;
+
+  if (screenshotTo) {
     // Снимок настоящего окна для документации: docs/screenshot.png.
-    win.webContents.once('did-finish-load', async () => {
-      const out = path.resolve(process.env.D3M3NK0_SCREENSHOT);
+    onRendererReady(async () => {
+      const out = path.resolve(screenshotTo);
       let saved = false;
+
+      // Необязательный сценарий: отправить запрос и дождаться ответа,
+      // чтобы снимок показывал живой диалог, а не пустое окно.
+      const prompt = process.env.D3M3NK0_SHOT_PROMPT;
+      if (prompt) {
+        try {
+          // Идём через UI, а не через IPC: так работают и пузырь пользователя,
+          // и блокировка ввода, по которой видно завершение хода.
+          await win.webContents.executeJavaScript(
+            `(() => {
+               const input = document.getElementById('input');
+               input.value = ${JSON.stringify(prompt)};
+               document.getElementById('send').click();
+               return true;
+             })()`
+          );
+          for (let i = 0; i < 240; i++) {
+            await new Promise((r) => setTimeout(r, 500));
+            const busy = await win.webContents.executeJavaScript("document.getElementById('send').disabled");
+            if (!busy) break;
+          }
+        } catch (e) {
+          console.log('SCREENSHOT: сценарий не выполнен —', e.message);
+        }
+      }
+
       for (let attempt = 1; attempt <= 5 && !saved; attempt++) {
         try {
           await new Promise((r) => setTimeout(r, 600)); // дать UI дорисоваться
@@ -103,9 +145,9 @@ app.whenReady().then(async () => {
     });
   }
 
-  if (process.env.D3M3NK0_SMOKE) {
+  if (smoke) {
     // Самопроверка: приложение должно подняться и корректно закрыться.
-    win.webContents.once('did-finish-load', async () => {
+    onRendererReady(async () => {
       console.log('SMOKE: renderer загружен');
       setTimeout(async () => {
         try {
@@ -124,6 +166,8 @@ app.whenReady().then(async () => {
       app.quit();
     }, 8000);
   }
+
+  await buildAgent();
 
   app.on('activate', () => {
     if (BrowserWindow.getAllWindows().length === 0) createWindow();

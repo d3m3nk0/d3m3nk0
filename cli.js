@@ -23,7 +23,12 @@ async function main() {
 
   const report = await mcp.connectAll(config.mcpServers);
   for (const r of report) {
-    console.log(r.ok ? `MCP ${r.server}: ${r.tools} инструментов` : `MCP ${r.server}: ошибка — ${r.error}`);
+    if (!r.ok) {
+      console.log(`MCP ${r.server}: ошибка — ${r.error}`);
+      continue;
+    }
+    const kTokens = Math.ceil(r.chars / 4 / 1000);
+    console.log(`MCP ${r.server}: ${r.tools} из ${r.total} инструментов (~${kTokens}k токенов)`);
   }
 
   let printing = false;
