@@ -37,6 +37,12 @@ async function main() {
       printing = true;
       stdout.write(ev.text);
     } else if (ev.type === 'assistant_message') {
+      if (ev.partial) {
+        // Ответ оборван: показываем пометку, с которой он сохранён в историю.
+        const last = (ev.message.blocks[0]?.text || '').split('\n').pop();
+        stdout.write(`${printing ? '\n' : ''}${last}`);
+        printing = true;
+      }
       if (printing) stdout.write('\n');
       printing = false;
     } else if (ev.type === 'tool_start') {
@@ -54,6 +60,18 @@ async function main() {
   };
 
   const agent = new Agent({ config, session, mcp, emit, askPermission });
+
+  // Ctrl+C во время генерации — «Стоп»: запрос прерывается, полученный текст
+  // сохраняется. Ctrl+C без активного запроса — выход, как раньше.
+  const onInterrupt = () => {
+    if (agent.busy) agent.abort();
+    else {
+      rl.close();
+      if (once) process.exit(130);
+    }
+  };
+  rl.on('SIGINT', onInterrupt); // терминал: readline перехватывает Ctrl+C сам
+  process.on('SIGINT', onInterrupt); // stdin не терминал (pipe)
   console.log(`d3m3nk0 · ${config.provider}/${config.model} · ${config.workdir}`);
   console.log(`Сессия: ${session.id}\n`);
 

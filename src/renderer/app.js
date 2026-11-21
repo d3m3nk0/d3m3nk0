@@ -237,6 +237,7 @@ window.d3.onEvent((ev) => {
       $('mcp-badge').textContent = `MCP: ${ev.servers.reduce((n, s) => n + s.tools, 0)} инстр.`;
       break;
     case 'idle':
+      endAssistant(); // после «Стоп» следующий ответ не должен приклеиться к прерванному
       hint.textContent = '';
       setBusy(false);
       refreshSessions();

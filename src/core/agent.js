@@ -109,12 +109,16 @@ class Agent {
     this.session?.append({ kind: 'message', message: userMessage });
     this.emit({ type: 'user_message', message: userMessage });
 
+    // Текст текущего шага, уже показанный пользователю. Живёт вне try, чтобы
+    // при отмене или обрыве посреди стрима попасть в историю, а не пропасть.
+    let streamed = '';
+
     try {
       for (let step = 0; step < MAX_STEPS; step++) {
         this.compactIfNeeded();
         this.emit({ type: 'turn_start', step });
 
-        let streamed = '';
+        streamed = '';
         const result = await runTurn({
           config: this.config,
           system: this.system,
@@ -128,6 +132,7 @@ class Agent {
           onToolStart: (info) => this.emit({ type: 'tool_planned', ...info }),
         });
 
+        streamed = ''; // ответ получен целиком и сохраняется ниже
         const assistantMessage = { role: 'assistant', blocks: result.blocks };
         this.messages.push(assistantMessage);
         this.session?.append({ kind: 'message', message: assistantMessage });
@@ -177,13 +182,26 @@ class Agent {
         this.session?.append({ kind: 'message', message: toolMessage });
       }
     } catch (e) {
-      if (e.name === 'AbortError') this.emit({ type: 'info', message: 'Остановлено пользователем' });
+      const aborted = e.name === 'AbortError';
+      if (streamed) this.savePartial(streamed, aborted ? 'прервано пользователем' : `прервано: ${e.message || e}`);
+      if (aborted) this.emit({ type: 'info', message: 'Остановлено пользователем' });
       else this.emit({ type: 'error', message: String(e.message || e) });
     } finally {
       this.busy = false;
       this.controller = null;
       this.emit({ type: 'idle' });
     }
+  }
+
+  /**
+   * Сохранить ответ, оборванный посреди стрима: то, что пользователь уже
+   * видел, остаётся в истории и журнале сессии с пометкой о причине.
+   */
+  savePartial(text, reason) {
+    const message = { role: 'assistant', blocks: [{ type: 'text', text: `${text}\n\n[${reason}]` }] };
+    this.messages.push(message);
+    this.session?.append({ kind: 'message', message });
+    this.emit({ type: 'assistant_message', message, partial: true });
   }
 
   abort() {

@@ -56,17 +56,27 @@ async function* sseEvents(res) {
   const reader = res.body.getReader();
   const decoder = new TextDecoder();
   let buf = '';
-  for (;;) {
-    const { done, value } = await reader.read();
-    if (done) break;
-    buf += decoder.decode(value, { stream: true });
-    if (buf.includes('\r')) buf = buf.replace(/\r\n/g, '\n');
-    let idx;
-    while ((idx = buf.indexOf('\n\n')) !== -1) {
-      const raw = buf.slice(0, idx);
-      buf = buf.slice(idx + 2);
-      yield raw;
+  let complete = false;
+  try {
+    for (;;) {
+      const { done, value } = await reader.read();
+      if (done) break;
+      buf += decoder.decode(value, { stream: true });
+      if (buf.includes('\r')) buf = buf.replace(/\r\n/g, '\n');
+      let idx;
+      while ((idx = buf.indexOf('\n\n')) !== -1) {
+        const raw = buf.slice(0, idx);
+        buf = buf.slice(idx + 2);
+        yield raw;
+      }
     }
+    complete = true;
+  } catch (e) {
+    if (e.name === 'AbortError') throw e; // «Стоп» пользователя — не обрыв
+    throw new Error(`соединение оборвано посреди ответа (${e.message})`);
+  } finally {
+    // Потребитель вышел раньше (например, после [DONE]) — закрываем соединение.
+    if (!complete) reader.cancel().catch(() => {});
   }
   if (buf.trim()) yield buf;
 }
@@ -221,25 +231,48 @@ async function runOpenAI({ config, system, messages, tools, onText, onToolStart,
   };
   if (tools.length) body.tools = toOpenAITools(tools);
 
-  const res = await endpointRequest(endpoint(config.baseUrl, '/v1/chat/completions'), {
-    method: 'POST',
-    headers: {
-      'content-type': 'application/json',
-      authorization: `Bearer ${config.apiKey}`,
-    },
-    body: JSON.stringify(body),
-    signal,
-  });
-  if (!res.ok) throw new Error(`OpenAI-совместимый API ${res.status}: ${(await res.text()).slice(0, 800)}`);
+  const url = endpoint(config.baseUrl, '/v1/chat/completions');
+  const request = (payload) =>
+    endpointRequest(url, {
+      method: 'POST',
+      headers: {
+        'content-type': 'application/json',
+        authorization: `Bearer ${config.apiKey}`,
+      },
+      body: JSON.stringify(payload),
+      signal,
+    });
+
+  let res = await request(body);
+  if (!res.ok) {
+    const errText = await res.text();
+    // Сервер без стриминга: повторяем тот же запрос обычным ответом.
+    if ((res.status === 400 || res.status === 422) && /stream/i.test(errText)) {
+      res = await request({ ...body, stream: false });
+      if (!res.ok) throw new Error(`OpenAI-совместимый API ${res.status}: ${(await res.text()).slice(0, 800)}`);
+    } else {
+      throw new Error(`OpenAI-совместимый API ${res.status}: ${errText.slice(0, 800)}`);
+    }
+  }
+
+  // Ответ целиком (stream проигнорирован или выключен) — разбираем как обычный JSON.
+  if (!/text\/event-stream/i.test(res.headers.get('content-type') || '')) {
+    return openAIWhole(await res.text(), onText, onToolStart);
+  }
 
   let text = '';
   const calls = new Map(); // index -> { id, name, args }
   let usage = null;
   let stopReason = null;
 
+  let finished = false;
   for await (const raw of sseEvents(res)) {
     for (const data of dataLines(raw)) {
-      if (!data || data === '[DONE]') continue;
+      if (data === '[DONE]') {
+        finished = true;
+        break;
+      }
+      if (!data) continue;
       let ev;
       try {
         ev = JSON.parse(data);
@@ -267,6 +300,7 @@ async function runOpenAI({ config, system, messages, tools, onText, onToolStart,
       }
       if (choice.finish_reason) stopReason = choice.finish_reason;
     }
+    if (finished) break; // после [DONE] не ждём, пока сервер закроет соединение
   }
 
   const blocks = [];
@@ -276,6 +310,26 @@ async function runOpenAI({ config, system, messages, tools, onText, onToolStart,
     blocks.push({ type: 'tool_use', id: c.id, name: c.name, input: safeJson(c.args) });
   }
   return { blocks, usage, stopReason };
+}
+
+/** Обычный (не потоковый) ответ chat/completions в канонические блоки. */
+function openAIWhole(raw, onText, onToolStart) {
+  const data = safeJson(raw, null);
+  const choice = data?.choices?.[0];
+  if (!choice) throw new Error(`OpenAI-совместимый API: неожиданный ответ: ${String(raw).slice(0, 300)}`);
+  const msg = choice.message || {};
+  const blocks = [];
+  if (msg.content) {
+    blocks.push({ type: 'text', text: msg.content });
+    onText?.(msg.content);
+  }
+  for (const [i, tc] of (msg.tool_calls || []).entries()) {
+    if (!tc.function?.name) continue;
+    const id = tc.id || `call_${i}`;
+    onToolStart?.({ id, name: tc.function.name });
+    blocks.push({ type: 'tool_use', id, name: tc.function.name, input: safeJson(tc.function.arguments) });
+  }
+  return { blocks, usage: data.usage || null, stopReason: choice.finish_reason || null };
 }
 
 /* --------------------------------- Dispatcher ----------------------------- */
