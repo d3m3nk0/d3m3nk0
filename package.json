@@ -5,8 +5,8 @@
   "description": "d3m3nk0 — desktop coding agent",
   "main": "src/main/main.js",
   "scripts": {
-    "start": "electron .",
-    "cli": "node cli.js",
+    "start": "node scripts/launch.js app",
+    "cli": "node scripts/launch.js cli",
     "test": "node test/smoke.js",
     "test:mcp": "node test/mcp-smoke.js"
   },

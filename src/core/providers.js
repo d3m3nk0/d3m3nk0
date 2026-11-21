@@ -38,6 +38,20 @@ function endpoint(baseUrl, path) {
   return base + path;
 }
 
+async function endpointRequest(url, init) {
+  try {
+    return await fetch(url, init);
+  } catch (e) {
+    const cause = e.cause;
+    const detail = cause ? cause.code || cause.message || String(cause) : e.message;
+    const hint =
+      detail === 'SELF_SIGNED_CERT_IN_CHAIN'
+        ? ' — TLS перехватывает прокси или антивирус; запустите через npm start или с NODE_USE_SYSTEM_CA=1'
+        : '';
+    throw new Error(`Сеть недоступна: ${url} (${detail})${hint}`);
+  }
+}
+
 async function* sseEvents(res) {
   const reader = res.body.getReader();
   const decoder = new TextDecoder();
@@ -95,7 +109,7 @@ async function runAnthropic({ config, system, messages, tools, onText, onToolSta
   };
   if (tools.length) body.tools = tools;
 
-  const res = await fetch(endpoint(config.baseUrl, '/v1/messages'), {
+  const res = await endpointRequest(endpoint(config.baseUrl, '/v1/messages'), {
     method: 'POST',
     headers: {
       'content-type': 'application/json',
@@ -207,7 +221,7 @@ async function runOpenAI({ config, system, messages, tools, onText, onToolStart,
   };
   if (tools.length) body.tools = toOpenAITools(tools);
 
-  const res = await fetch(endpoint(config.baseUrl, '/v1/chat/completions'), {
+  const res = await endpointRequest(endpoint(config.baseUrl, '/v1/chat/completions'), {
     method: 'POST',
     headers: {
       'content-type': 'application/json',
