@@ -59,8 +59,26 @@ async function main() {
     }
   };
 
+  // Текущий вопрос readline (приглашение «›» или запрос разрешения). Ctrl+C должен
+  // уметь его отменить: rl.close() сам по себе ожидающий rl.question() не завершает,
+  // и цикл ниже повис бы на await навсегда.
+  let questionAbort = null;
+  const ask = async (prompt) => {
+    questionAbort = new AbortController();
+    try {
+      return await rl.question(prompt, { signal: questionAbort.signal });
+    } finally {
+      questionAbort = null;
+    }
+  };
+
   const askPermission = async ({ name, input }) => {
-    const ans = await rl.question(`\nРазрешить ${name} ${JSON.stringify(input).slice(0, 200)}? [y/N] `);
+    let ans;
+    try {
+      ans = await ask(`\nРазрешить ${name} ${JSON.stringify(input).slice(0, 200)}? [y/N] `);
+    } catch {
+      return false; // вопрос отменён через Ctrl+C — считаем отказом
+    }
     return /^y/i.test(ans.trim());
   };
 
@@ -69,11 +87,17 @@ async function main() {
   // Ctrl+C во время генерации — «Стоп»: запрос прерывается, полученный текст
   // сохраняется. Ctrl+C без активного запроса — выход, как раньше.
   const onInterrupt = () => {
-    if (agent.busy) agent.abort();
-    else {
-      rl.close();
-      if (once) process.exit(130);
+    if (agent.busy) {
+      questionAbort?.abort(); // висит запрос разрешения — снимаем его как отказ
+      agent.abort();
+      return;
     }
+    // Покой: делаем то же, что readline делает сам, когда своего обработчика нет, —
+    // закрываем интерфейс и отменяем ожидающий вопрос. Цикл выходит, MCP закрывается,
+    // процесс завершается с кодом 0.
+    questionAbort?.abort();
+    rl.close();
+    if (once) process.exit(130);
   };
   rl.on('SIGINT', onInterrupt); // терминал: readline перехватывает Ctrl+C сам
   process.on('SIGINT', onInterrupt); // stdin не терминал (pipe)
@@ -91,7 +115,7 @@ async function main() {
   for (;;) {
     let line;
     try {
-      line = await rl.question('› ');
+      line = await ask('› ');
     } catch {
       break;
     }
