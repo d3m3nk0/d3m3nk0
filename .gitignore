@@ -4,3 +4,17 @@ out/
 .env
 *.log
 .DS_Store
+
+# Распакованный DeepSeek Harness и его установщик (чужая программа)
+harness_unpacked/
+harness_app/
+harness_code/
+app.7z
+deepseek-harness-*.exe
+
+# Логи тестовых запусков
+shot-*.txt
+smoke-*.txt
+
+# Скриншот снимается тестовым сценарием
+docs/screenshot.png
