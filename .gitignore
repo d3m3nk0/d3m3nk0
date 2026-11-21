@@ -9,6 +9,7 @@ out/
 harness_unpacked/
 harness_app/
 harness_code/
+harness_codeecho/
 app.7z
 deepseek-harness-*.exe
 
