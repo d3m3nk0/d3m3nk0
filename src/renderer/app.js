@@ -53,6 +53,77 @@ function endAssistant() {
   currentAssistant = null;
 }
 
+/* ----------------------- рассуждение и вызовы инструментов --------------------- */
+
+let currentReasoning = null; // тело открытого блока «Рассуждение» текущего шага
+const pendingTools = new Map(); // id вызова -> строка «Вызываю инструмент…»
+
+/** Блок «Рассуждение» шага: свёрнут по умолчанию, текст дописывается по мере прихода. */
+function ensureReasoning() {
+  if (!currentReasoning) {
+    const box = el('details', 'reasoning');
+    box.append(el('summary', null, 'Рассуждение'));
+    currentReasoning = el('div', 'reasoning-body', '');
+    box.append(currentReasoning);
+    transcript.append(box);
+  }
+  return currentReasoning;
+}
+
+function endReasoning() {
+  currentReasoning = null;
+}
+
+function addPendingTool(id, name) {
+  const line = el('div', 'msg pending-tool', `▸ Вызываю инструмент: ${name}…`);
+  line.dataset.name = name;
+  pendingTools.set(id, line);
+  transcript.append(line);
+  scrollDown();
+}
+
+/** Убрать строку ожидания: по id, а если провайдер сменил id — по имени. */
+function removePendingTool(id, name) {
+  let key = pendingTools.has(id) ? id : null;
+  if (!key) for (const [k, line] of pendingTools) if (line.dataset.name === name) { key = k; break; }
+  if (key == null) return;
+  pendingTools.get(key).remove();
+  pendingTools.delete(key);
+}
+
+function clearPendingTools() {
+  for (const line of pendingTools.values()) line.remove();
+  pendingTools.clear();
+}
+
+/* ---------------------------- строка состояния ---------------------------- */
+
+// Что сейчас делает агент. Фаза меняется по последнему событию, таймер тикает
+// раз в секунду, чтобы тишина не выглядела как зависание.
+let phase = null; // { text, since }
+let phaseTimer = null;
+
+function renderPhase() {
+  if (!phase) {
+    hint.textContent = '';
+    return;
+  }
+  const sec = Math.floor((Date.now() - phase.since) / 1000);
+  hint.textContent = sec >= 1 ? `${phase.text} ${sec} с` : phase.text;
+}
+
+function setPhase(text) {
+  if (!text) {
+    phase = null;
+    clearInterval(phaseTimer);
+    phaseTimer = null;
+  } else {
+    if (phase?.text !== text) phase = { text, since: Date.now() };
+    if (!phaseTimer) phaseTimer = setInterval(renderPhase, 1000);
+  }
+  renderPhase();
+}
+
 function addToolCard(id, name, input) {
   const card = el('div', 'tool');
   card.dataset.id = id;
@@ -116,6 +187,9 @@ function showPermission(req) {
 /** Пустое состояние: без него первый экран — просто пустая область. */
 function showEmptyState() {
   if (transcript.querySelector('.empty')) return;
+  // init() асинхронный: если пользователь успел отправить сообщение раньше,
+  // заметка «Готов к работе» дорисовалась бы под ним.
+  if (transcript.querySelector('.msg.user, .msg.assistant')) return;
   const box = el('div', 'empty');
   box.append(el('h3', null, 'Готов к работе'));
   const list = el('ul');
@@ -133,6 +207,8 @@ function showEmptyState() {
 function renderHistory(messages) {
   transcript.replaceChildren();
   toolCards.clear();
+  pendingTools.clear();
+  endReasoning();
   if (!messages.length) {
     showEmptyState();
     return;
@@ -203,9 +279,26 @@ window.d3.onEvent((ev) => {
     case 'assistant_text': {
       const node = ensureAssistant();
       node.textContent += ev.text;
+      setPhase(null); // текст виден сам, индикатор не нужен
       scrollDown();
       break;
     }
+    case 'assistant_reasoning': {
+      const body = ensureReasoning();
+      body.textContent += ev.text;
+      setPhase('модель думает…');
+      scrollDown();
+      break;
+    }
+    case 'stream_open':
+      setPhase('модель думает…');
+      break;
+    case 'tool_call_start':
+      endAssistant(); // текст после вызова пойдёт новым пузырём
+      endReasoning();
+      addPendingTool(ev.id, ev.name);
+      setPhase(`▸ Вызываю инструмент: ${ev.name}…`);
+      break;
     case 'assistant_message': {
       const text = (ev.message.blocks || [])
         .filter((b) => b.type === 'text')
@@ -219,13 +312,17 @@ window.d3.onEvent((ev) => {
       break;
     }
     case 'tool_start':
+      removePendingTool(ev.id, ev.name); // строку ожидания сменяет обычная карточка
       addToolCard(ev.id, ev.name, ev.input);
+      setPhase(`выполняется ${ev.name}…`);
       break;
     case 'tool_end':
+      removePendingTool(ev.id, ev.name); // вызов отклонён — карточки не было
       updateToolCard(ev.id, ev.ok, ev.output);
       break;
     case 'turn_start':
-      hint.textContent = 'модель думает…';
+      endReasoning(); // у каждого шага свой блок рассуждения
+      setPhase('ждём ответ сервера…');
       break;
     case 'info':
       addInfo(ev.message);
@@ -238,7 +335,9 @@ window.d3.onEvent((ev) => {
       break;
     case 'idle':
       endAssistant(); // после «Стоп» следующий ответ не должен приклеиться к прерванному
-      hint.textContent = '';
+      endReasoning();
+      clearPendingTools();
+      setPhase(null);
       setBusy(false);
       refreshSessions();
       break;
@@ -263,7 +362,7 @@ async function send() {
   input.value = '';
   addUser(text);
   setBusy(true);
-  hint.textContent = 'модель думает…';
+  setPhase('ждём ответ сервера…');
   try {
     await window.d3.send(text);
   } catch (e) {

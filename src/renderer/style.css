@@ -199,6 +199,31 @@ header {
 }
 .tool details[open] summary { color: var(--text); }
 
+/* Рассуждение модели: свёрнуто по умолчанию, раскрывается кликом. */
+.reasoning {
+  max-width: 900px;
+  border-left: 2px solid var(--line);
+  padding-left: 10px;
+  font-size: 12.5px;
+  color: var(--muted);
+}
+.reasoning summary { cursor: pointer; user-select: none; }
+.reasoning[open] summary { color: var(--text); }
+.reasoning-body {
+  margin-top: 6px;
+  white-space: pre-wrap;
+  word-break: break-word;
+  max-height: 280px;
+  overflow: auto;
+}
+
+/* Модель начала вызов инструмента, аргументы ещё генерируются. */
+.msg.pending-tool {
+  color: var(--accent);
+  font: 12.5px ui-monospace, "Cascadia Mono", monospace;
+  opacity: 0.85;
+}
+
 /* ------------------------------ permission ------------------------------ */
 
 #permission-area { padding: 0 18px; }

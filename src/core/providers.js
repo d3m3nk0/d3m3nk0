@@ -108,7 +108,7 @@ function toAnthropicMessages(messages) {
   return out;
 }
 
-async function runAnthropic({ config, system, messages, tools, onText, onToolStart, signal }) {
+async function runAnthropic({ config, system, messages, tools, onText, onToolStart, onReasoning, onOpen, signal }) {
   const body = {
     model: config.model,
     max_tokens: config.maxTokens,
@@ -130,6 +130,7 @@ async function runAnthropic({ config, system, messages, tools, onText, onToolSta
     signal,
   });
   if (!res.ok) throw new Error(`Anthropic API ${res.status}: ${(await res.text()).slice(0, 800)}`);
+  onOpen?.();
 
   const blocks = [];
   let current = null;
@@ -160,6 +161,8 @@ async function runAnthropic({ config, system, messages, tools, onText, onToolSta
           onText?.(d.text || '');
         } else if (d.type === 'input_json_delta' && current) {
           current.json += d.partial_json || '';
+        } else if (d.type === 'thinking_delta' && d.thinking) {
+          onReasoning?.(d.thinking); // только для показа, в блоки ответа не попадает
         }
       } else if (ev.type === 'content_block_stop') {
         if (current) {
@@ -221,7 +224,7 @@ function toOpenAITools(tools) {
   }));
 }
 
-async function runOpenAI({ config, system, messages, tools, onText, onToolStart, signal }) {
+async function runOpenAI({ config, system, messages, tools, onText, onToolStart, onReasoning, onOpen, signal }) {
   const body = {
     model: config.model,
     messages: toOpenAIMessages(system, messages),
@@ -255,9 +258,11 @@ async function runOpenAI({ config, system, messages, tools, onText, onToolStart,
     }
   }
 
+  onOpen?.(); // сервер ответил — дальше ждём уже не сеть, а генерацию
+
   // Ответ целиком (stream проигнорирован или выключен) — разбираем как обычный JSON.
   if (!/text\/event-stream/i.test(res.headers.get('content-type') || '')) {
-    return openAIWhole(await res.text(), onText, onToolStart);
+    return openAIWhole(await res.text(), onText, onToolStart, onReasoning);
   }
 
   let text = '';
@@ -283,20 +288,26 @@ async function runOpenAI({ config, system, messages, tools, onText, onToolStart,
       const choice = (ev.choices || [])[0];
       if (!choice) continue;
       const delta = choice.delta || {};
+      // Ход рассуждения (NVIDIA Nemotron, DeepSeek и др.): только для показа,
+      // в text и историю не попадает.
+      const reasoning = delta.reasoning_content || delta.reasoning;
+      if (reasoning) onReasoning?.(reasoning);
       if (delta.content) {
         text += delta.content;
         onText?.(delta.content);
       }
       for (const tc of delta.tool_calls || []) {
         const idx = tc.index ?? 0;
-        if (!calls.has(idx)) {
-          calls.set(idx, { id: tc.id || `call_${idx}`, name: tc.function?.name || '', args: '' });
-          if (tc.function?.name) onToolStart?.({ id: calls.get(idx).id, name: tc.function.name });
-        }
+        if (!calls.has(idx)) calls.set(idx, { id: tc.id || `call_${idx}`, name: '', args: '', announced: false });
         const cur = calls.get(idx);
         if (tc.id) cur.id = tc.id;
         if (tc.function?.name) cur.name = tc.function.name;
         if (tc.function?.arguments) cur.args += tc.function.arguments;
+        // Имя может прийти не в первом чанке вызова — объявляем, как только оно известно.
+        if (cur.name && !cur.announced) {
+          cur.announced = true;
+          onToolStart?.({ id: cur.id, name: cur.name });
+        }
       }
       if (choice.finish_reason) stopReason = choice.finish_reason;
     }
@@ -313,11 +324,13 @@ async function runOpenAI({ config, system, messages, tools, onText, onToolStart,
 }
 
 /** Обычный (не потоковый) ответ chat/completions в канонические блоки. */
-function openAIWhole(raw, onText, onToolStart) {
+function openAIWhole(raw, onText, onToolStart, onReasoning) {
   const data = safeJson(raw, null);
   const choice = data?.choices?.[0];
   if (!choice) throw new Error(`OpenAI-совместимый API: неожиданный ответ: ${String(raw).slice(0, 300)}`);
   const msg = choice.message || {};
+  const reasoning = msg.reasoning_content || msg.reasoning;
+  if (reasoning) onReasoning?.(reasoning);
   const blocks = [];
   if (msg.content) {
     blocks.push({ type: 'text', text: msg.content });

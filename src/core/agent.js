@@ -129,7 +129,12 @@ class Agent {
             streamed += delta;
             this.emit({ type: 'assistant_text', text: delta });
           },
-          onToolStart: (info) => this.emit({ type: 'tool_planned', ...info }),
+          // Модель начала вызов инструмента: имя известно, аргументы ещё идут.
+          onToolStart: (info) => this.emit({ type: 'tool_call_start', ...info }),
+          // Ход рассуждения — только для показа. В messages и журнал сессии не пишется.
+          onReasoning: (delta) => this.emit({ type: 'assistant_reasoning', text: delta }),
+          // Сервер прислал заголовки: ожидание сети кончилось, идёт генерация.
+          onOpen: () => this.emit({ type: 'stream_open', step }),
         });
 
         streamed = ''; // ответ получен целиком и сохраняется ниже

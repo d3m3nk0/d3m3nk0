@@ -45,8 +45,13 @@ async function main() {
       }
       if (printing) stdout.write('\n');
       printing = false;
+    } else if (ev.type === 'tool_call_start') {
+      // Модель начала вызов: аргументы ещё генерируются. Рассуждение
+      // (assistant_reasoning) в терминал намеренно не печатаем.
+      stdout.write(`${printing ? '\n' : ''}▸ Вызываю инструмент: ${ev.name}…\n`);
+      printing = false;
     } else if (ev.type === 'tool_start') {
-      console.log(`\n→ ${ev.name} ${JSON.stringify(ev.input)}`);
+      console.log(`→ ${ev.name} ${JSON.stringify(ev.input)}`);
     } else if (ev.type === 'tool_end') {
       console.log(`${ev.ok ? '✓' : '✗'} ${ev.name}: ${ev.output.split('\n')[0].slice(0, 120)}`);
     } else if (ev.type === 'error') {
