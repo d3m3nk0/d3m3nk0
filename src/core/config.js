@@ -24,7 +24,10 @@ const DEFAULTS = {
   temperature: 0,
   workdir: process.cwd(),
   permissionMode: 'ask', // 'ask' | 'allow-edits' | 'yolo'
-  contextBudget: 120000, // примерный лимит токенов истории
+  contextBudget: 120000, // примерный лимит токенов запроса: история + промпт + схемы инструментов
+  // Результаты инструментов прошлых ходов длиннее порога уходят в модель
+  // обрезанными (начало + конец). Журнал сессии хранит их полностью. 0 — не резать.
+  toolResultTruncateTokens: 400,
   mcpServers: {},
 };
 

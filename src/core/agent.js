@@ -15,6 +15,7 @@
 
 const { runTurn, estimateMessagesTokens } = require('./providers');
 const { toolSchemas, runTool } = require('./tools');
+const { prepareForRequest, toolSchemaTokens } = require('./context');
 
 const MAX_STEPS = 40;
 const READ_ONLY_TOOLS = new Set(['read_file', 'list_dir', 'glob_search', 'grep_search']);
@@ -67,10 +68,25 @@ class Agent {
     return this.messages;
   }
 
+  /** Схемы инструментов текущего запроса: встроенные + MCP. */
+  get toolDefs() {
+    return toolSchemas(this.mcp?.toolDefs || []);
+  }
+
+  /** История в том виде, в каком уходит в модель: старые результаты инструментов обрезаны. */
+  requestMessages() {
+    return prepareForRequest(this.messages, this.config.toolResultTruncateTokens);
+  }
+
+  /** Оценка всего запроса: история (обрезанная) + системный промпт + схемы инструментов. */
+  requestTokens() {
+    return estimateMessagesTokens(this.requestMessages(), this.system) + toolSchemaTokens(this.toolDefs);
+  }
+
   /** Убирает начало истории, если контекст распух. Пары tool_use/tool_result не рвём. */
   compactIfNeeded() {
     const budget = this.config.contextBudget || 120000;
-    let est = estimateMessagesTokens(this.messages, this.system);
+    let est = this.requestTokens();
     if (est <= budget) return;
 
     const before = this.messages.length;
@@ -82,12 +98,12 @@ class Agent {
         // начало не на границе хода — сдвигаемся на одно сообщение, чтобы найти границу
         this.messages.shift();
         dropped++;
-        est = estimateMessagesTokens(this.messages, this.system);
+        est = this.requestTokens();
         continue;
       }
       this.messages.shift();
       dropped++;
-      est = estimateMessagesTokens(this.messages, this.system);
+      est = this.requestTokens();
     }
     if (dropped) {
       this.messages.unshift({
@@ -122,8 +138,10 @@ class Agent {
         const result = await runTurn({
           config: this.config,
           system: this.system,
-          messages: this.messages,
-          tools: toolSchemas(this.mcp?.toolDefs || []),
+          // В модель — копия с обрезанными старыми результатами; this.messages
+          // и журнал сессии остаются полными.
+          messages: this.requestMessages(),
+          tools: this.toolDefs,
           signal: sig,
           onText: (delta) => {
             streamed += delta;
