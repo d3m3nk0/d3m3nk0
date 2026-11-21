@@ -323,6 +323,74 @@ async function main() {
     assert.strictEqual(agent2.history.length, chat.length);
   });
 
+  /**
+   * Сценарий, в котором цикл compactIfNeeded останавливается ровно после
+   * выброшенного вызова инструмента:
+   *   #0 user: большой вопрос (~1000 токенов)
+   *   #1 assistant: tool_use t1 (~200 токенов в аргументах)
+   *   #2 user: tool_result t1 (короткий)
+   *   #3..#9 обычная переписка
+   * Бюджет подобран так, что после выброса #0 запрос ещё > 75% бюджета,
+   * а после выброса #1 — уже ≤ 75%. Цикл останавливается, и первым
+   * в истории (после пометки о сокращении) оказывается tool_result без вызова.
+   */
+  const orphanScenario = () => [
+    { role: 'user', blocks: [{ type: 'text', text: `вопрос ${'а'.repeat(4000)}` }] },
+    { role: 'assistant', blocks: [{ type: 'tool_use', id: 't1', name: 'read_file', input: { path: 'x.txt', note: 'б'.repeat(720) } }] },
+    { role: 'user', blocks: [{ type: 'tool_result', id: 't1', content: 'ok', is_error: false }] },
+    { role: 'assistant', blocks: [{ type: 'text', text: 'прочитал' }] },
+    ...Array.from({ length: 6 }, (_, i) => ({ role: i % 2 ? 'assistant' : 'user', blocks: [{ type: 'text', text: `реплика ${i}` }] })),
+  ];
+
+  /** Нарушения парности: результат без предшествующего вызова, вызов без результата. */
+  function pairingProblems(messages) {
+    const problems = [];
+    const calls = new Set();
+    const answered = new Set();
+    for (const [i, m] of messages.entries()) {
+      for (const b of m.blocks || []) {
+        if (b.type === 'tool_use') calls.add(b.id);
+        if (b.type === 'tool_result') {
+          if (!calls.has(b.id)) problems.push(`#${i}: результат ${b.id} без вызова`);
+          answered.add(b.id);
+        }
+      }
+    }
+    for (const id of calls) if (!answered.has(id)) problems.push(`вызов ${id} без результата`);
+    return problems;
+  }
+
+  await check('compactIfNeeded: не оставляет результат инструмента без его вызова', () => {
+    const msgs = orphanScenario();
+    const probe = new Agent({ config: loadConfig(), session: null, mcp: null });
+    probe.loadHistory(msgs);
+    const full = probe.requestTokens();
+    probe.loadHistory(msgs.slice(1));
+    const withoutQuestion = probe.requestTokens();
+    probe.loadHistory(msgs.slice(2));
+    const withoutCall = probe.requestTokens();
+    const budget = Math.ceil((withoutCall + 5) / 0.75);
+    // Предусловия: иначе тест прошёл бы впустую, не воспроизведя ситуацию.
+    assert.ok(full > budget, 'сценарий: история должна превышать бюджет');
+    assert.ok(withoutQuestion > budget * 0.75, 'сценарий: после выброса вопроса запрос ещё выше 75%');
+    assert.ok(withoutCall <= budget * 0.75, 'сценарий: после выброса вызова запрос уже в пределах 75%');
+
+    const agent = new Agent({ config: { ...loadConfig(), contextBudget: budget }, session: null, mcp: null });
+    agent.loadHistory(msgs);
+    agent.compactIfNeeded();
+    assert.deepStrictEqual(pairingProblems(agent.history), []);
+    assert.match(agent.history[0].blocks[0].text, /Ранняя часть разговора сокращена/);
+  });
+
+  await check('compactIfNeeded: история из одной пары вызов—результат не опустошается', () => {
+    const pair = orphanScenario().slice(0, 3);
+    const agent = new Agent({ config: { ...loadConfig(), contextBudget: 1 }, session: null, mcp: null });
+    agent.loadHistory(pair);
+    agent.compactIfNeeded();
+    assert.strictEqual(agent.history.length, 3, 'выброшено больше, чем позволяет минимум');
+    assert.deepStrictEqual(pairingProblems(agent.history), []);
+  });
+
   await check('requestTokens агента совпадает с session-tokens.js --after-truncation', async () => {
     const file = path.join(TMP_ROOT, 'sample-session.jsonl');
     fs.writeFileSync(file, conversation().concat([{ role: 'user', blocks: [{ type: 'text', text: 'итог?' }] }])

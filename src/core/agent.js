@@ -83,7 +83,15 @@ class Agent {
     return estimateMessagesTokens(this.requestMessages(), this.system) + toolSchemaTokens(this.toolDefs);
   }
 
-  /** Убирает начало истории, если контекст распух. Пары tool_use/tool_result не рвём. */
+  /**
+   * Убирает начало истории, если запрос не влезает в contextBudget.
+   *
+   * Сообщения выбрасываются по одному с начала, пока запрос не станет ≤ 75%
+   * бюджета (минимум 6 сообщений остаются). Цикл может остановиться сразу
+   * после выброшенного вызова инструмента — тогда первым оказался бы его
+   * результат без вызова, и API отклонил бы запрос (400). Поэтому после цикла
+   * такие осиротевшие результаты тоже выбрасываются.
+   */
   compactIfNeeded() {
     const budget = this.config.contextBudget || 120000;
     let est = this.requestTokens();
@@ -92,18 +100,16 @@ class Agent {
     const before = this.messages.length;
     let dropped = 0;
     while (this.messages.length > 6 && est > budget * 0.75) {
-      const first = this.messages[0];
-      const isSafeBoundary = first.role === 'user' && (first.blocks || []).every((b) => b.type === 'text');
-      if (!isSafeBoundary) {
-        // начало не на границе хода — сдвигаемся на одно сообщение, чтобы найти границу
-        this.messages.shift();
-        dropped++;
-        est = this.requestTokens();
-        continue;
-      }
       this.messages.shift();
       dropped++;
       est = this.requestTokens();
+    }
+    // Хвост чужой пары: результаты инструментов, чей вызов только что выброшен.
+    if (dropped) {
+      while (this.messages.length && (this.messages[0].blocks || []).some((b) => b.type === 'tool_result')) {
+        this.messages.shift();
+        dropped++;
+      }
     }
     if (dropped) {
       this.messages.unshift({
