@@ -9,6 +9,7 @@
 
 const { app, BrowserWindow, ipcMain, Menu, dialog, shell } = require('electron');
 const fs = require('node:fs');
+const os = require('node:os');
 const path = require('node:path');
 const { loadConfig, saveConfig } = require('../core/config');
 const { Session } = require('../core/session');
@@ -270,6 +271,52 @@ ipcMain.handle('model:menu', () => {
       },
     });
   });
+});
+
+/** Подпись провайдера для меню профиля: по адресу API, без ключей и путей. */
+function providerLabel(cfg) {
+  let host = '';
+  try {
+    host = new URL(cfg.baseUrl).hostname;
+  } catch {
+    return cfg.provider;
+  }
+  if (/^(localhost|127\.0\.0\.1|\[::1\])$/.test(host)) return 'локальная модель';
+  const known = { nvidia: 'NVIDIA', anthropic: 'Anthropic', openrouter: 'OpenRouter', deepseek: 'DeepSeek', openai: 'OpenAI' };
+  const hit = Object.keys(known).find((k) => host.includes(k));
+  return hit ? known[hit] : host;
+}
+
+// Меню профиля внизу слева: имя, через кого подключена модель, есть ли ключ.
+ipcMain.handle('app:info', () => ({
+  name: (config.displayName || '').trim() || os.userInfo().username,
+  provider: providerLabel(config),
+  hasKey: !!config.apiKey,
+  version: app.getVersion(),
+  electron: process.versions.electron,
+  node: process.versions.node,
+}));
+
+// «Использование»: оценка текущей сессии (как её видит модель), без сетевых запросов.
+ipcMain.handle('usage:get', () => ({
+  sessionId: session.id,
+  messages: agent ? agent.history.length : 0,
+  contextTokens: agent ? agent.requestTokens() : 0,
+  budget: config.contextBudget,
+  model: config.model,
+  provider: providerLabel(config),
+}));
+
+// Открыть в проводнике только известные места: окно не передаёт сюда путь.
+ipcMain.handle('shell:openPlace', async (_e, place) => {
+  const places = {
+    workdir: config.workdir,
+    help: path.join(__dirname, '..', '..', 'README.md'),
+  };
+  const target = places[place];
+  if (!target) return { ok: false };
+  const err = await shell.openPath(target);
+  return err ? { ok: false, error: err } : { ok: true };
 });
 
 // Ссылки из ответов модели открываются в браузере, а не в окне агента.

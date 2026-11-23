@@ -14,7 +14,20 @@
       <button id="new-session" class="ghost">+ Новая сессия</button>
       <div id="sessions" class="sessions"></div>
       <div class="sidebar-foot">
-        <button id="open-settings" class="ghost">Настройки</button>
+        <div id="profile-menu" class="popover" role="menu" hidden>
+          <div id="pm-head" class="pop-head"></div>
+          <button class="pop-item" role="menuitem" data-act="settings"><span>Настройки</span><kbd>Ctrl+,</kbd></button>
+          <button class="pop-item" role="menuitem" data-act="usage"><span>Использование</span></button>
+          <button class="pop-item" role="menuitem" data-act="workdir"><span>Открыть рабочую папку</span></button>
+          <div class="pop-sep"></div>
+          <button class="pop-item" role="menuitem" data-act="help"><span>Помощь (README)</span></button>
+          <button class="pop-item" role="menuitem" data-act="about"><span>О программе</span></button>
+        </div>
+        <button id="profile" class="profile" aria-haspopup="menu" aria-expanded="false">
+          <span id="pf-avatar" class="avatar">?</span>
+          <span class="pf-text"><span id="pf-name">—</span><span id="pf-sub" class="pf-sub">—</span></span>
+          <span class="pf-chev" aria-hidden="true">⌃</span>
+        </button>
       </div>
     </aside>
 
@@ -44,6 +57,10 @@
     <dialog id="settings">
       <form method="dialog" class="settings-form">
         <h2>Настройки</h2>
+
+        <label>Ваше имя (для меню внизу слева)
+          <input id="s-name" placeholder="по умолчанию — имя пользователя Windows" />
+        </label>
 
         <label>Провайдер
           <select id="s-provider">
@@ -83,6 +100,16 @@
         <div class="dialog-actions">
           <button value="cancel" class="ghost">Отмена</button>
           <button id="save-settings" value="default">Сохранить</button>
+        </div>
+      </form>
+    </dialog>
+
+    <dialog id="info-dialog">
+      <form method="dialog" class="settings-form">
+        <h2 id="info-title"></h2>
+        <div id="info-body" class="info-body"></div>
+        <div class="dialog-actions">
+          <button value="close">Закрыть</button>
         </div>
       </form>
     </dialog>

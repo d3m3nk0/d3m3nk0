@@ -107,7 +107,77 @@ body.resizing #sidebar-resizer::after { background: var(--accent); }
 .session.active { border-color: var(--line); background: var(--panel-2); color: var(--text); }
 .session.pinned::before { content: '📌 '; }
 
-.sidebar-foot { border-top: 1px solid var(--line); padding-top: 10px; }
+.sidebar-foot { position: relative; border-top: 1px solid var(--line); padding-top: 10px; }
+
+/* Кнопка профиля внизу слева и меню над ней (как в Claude). */
+.profile {
+  width: 100%;
+  display: flex;
+  align-items: center;
+  gap: 9px;
+  padding: 6px 8px;
+  background: transparent;
+  border: 1px solid transparent;
+  text-align: left;
+}
+.profile:hover, .profile[aria-expanded="true"] { background: var(--panel-2); border-color: var(--line); }
+.avatar {
+  flex: none;
+  width: 26px;
+  height: 26px;
+  border-radius: 50%;
+  display: grid;
+  place-items: center;
+  background: #e0af68;
+  color: #2a1d06;
+  font-weight: 700;
+  font-size: 13px;
+}
+.pf-text { display: flex; flex-direction: column; min-width: 0; flex: 1; line-height: 1.25; }
+#pf-name { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font-size: 13px; }
+.pf-sub { font-size: 11px; color: var(--muted); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.pf-sub.warn { color: var(--warn); }
+.pf-chev { color: var(--muted); font-size: 11px; }
+
+.popover {
+  position: absolute;
+  left: 0;
+  right: 0;
+  bottom: calc(100% + 6px);
+  min-width: 220px;
+  background: var(--panel-2);
+  border: 1px solid #323848;
+  border-radius: 12px;
+  padding: 6px;
+  box-shadow: 0 10px 30px rgba(0, 0, 0, 0.45);
+  z-index: 20;
+}
+.popover[hidden] { display: none; }
+.pop-head { font-size: 11.5px; color: var(--muted); padding: 6px 9px 8px; }
+.pop-item {
+  width: 100%;
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 10px;
+  background: transparent;
+  border: 0;
+  border-radius: 8px;
+  padding: 7px 9px;
+  font-size: 13px;
+  text-align: left;
+  color: var(--text);
+}
+.pop-item:hover, .pop-item:focus-visible { background: #2a3040; outline: none; }
+.pop-item kbd { font: 11px ui-monospace, "Cascadia Mono", monospace; color: var(--muted); }
+.pop-sep { height: 1px; background: var(--line); margin: 5px 4px; }
+
+.info-body table.kv { border-collapse: collapse; width: 100%; font-size: 13px; }
+.info-body td { padding: 6px 4px; border-bottom: 1px solid var(--line); vertical-align: top; }
+.info-body td:first-child { color: var(--muted); width: 42%; }
+.info-note { color: var(--muted); font-size: 12px; margin: 12px 0 0; }
+.meter { height: 6px; background: var(--bg); border-radius: 3px; overflow: hidden; margin-top: 6px; }
+.meter-fill { height: 100%; background: var(--accent); }
 
 /* -------------------------------- main ---------------------------------- */
 

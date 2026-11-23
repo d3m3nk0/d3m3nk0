@@ -273,6 +273,7 @@ function renderHistory(messages) {
 /* ------------------------------ настройки -------------------------------- */
 
 let currentConfig = null;
+let mcpToolsKnown = false;
 
 async function refreshConfig() {
   const cfg = await window.d3.getConfig();
@@ -280,9 +281,11 @@ async function refreshConfig() {
   $('model-badge').textContent = `${cfg.provider} · ${cfg.model}`;
   $('workdir-badge').textContent = cfg.workdir;
   $('workdir-badge').title = cfg.workdir;
-  const servers = Object.keys(cfg.mcpServers || {}).length;
-  $('mcp-badge').textContent = `MCP: ${servers}`;
+  // Пока MCP не прислал статус, показываем число серверов; потом — число
+  // инструментов, и повторное открытие настроек его не затирает.
+  if (!mcpToolsKnown) $('mcp-badge').textContent = `MCP: ${Object.keys(cfg.mcpServers || {}).length}`;
 
+  $('s-name').value = cfg.displayName || '';
   $('s-provider').value = cfg.provider;
   $('s-model').value = cfg.model;
   $('s-baseurl').value = cfg.baseUrl;
@@ -388,6 +391,7 @@ window.d3.onEvent((ev) => {
       addError(ev.message);
       break;
     case 'mcp_status':
+      mcpToolsKnown = true;
       $('mcp-badge').textContent = `MCP: ${ev.servers.reduce((n, s) => n + s.tools, 0)} инстр.`;
       break;
     case 'idle':
@@ -461,10 +465,112 @@ $('model-badge').onclick = async () => {
   }
 };
 
-$('open-settings').onclick = async () => {
+async function openSettings() {
   await refreshConfig();
   $('settings').showModal();
+}
+
+/* ------------------------------ меню профиля ------------------------------ */
+
+const profileBtn = $('profile');
+const profileMenu = $('profile-menu');
+
+async function refreshProfile() {
+  const info = await window.d3.appInfo();
+  $('pf-name').textContent = info.name;
+  $('pf-avatar').textContent = (info.name.trim()[0] || '?').toUpperCase();
+  $('pf-sub').textContent = info.hasKey ? info.provider : `${info.provider} · нет ключа`;
+  $('pf-sub').classList.toggle('warn', !info.hasKey);
+  $('pm-head').textContent = info.hasKey ? `Модель через ${info.provider} по API-ключу` : 'API-ключ не задан';
+  return info;
+}
+
+function setProfileMenu(open) {
+  profileMenu.hidden = !open;
+  profileBtn.setAttribute('aria-expanded', String(open));
+  if (open) profileMenu.querySelector('.pop-item')?.focus();
+}
+
+profileBtn.onclick = (e) => {
+  e.stopPropagation();
+  setProfileMenu(profileMenu.hidden);
 };
+document.addEventListener('click', (e) => {
+  if (!profileMenu.hidden && !profileMenu.contains(e.target)) setProfileMenu(false);
+});
+document.addEventListener('keydown', (e) => {
+  if (e.key === 'Escape' && !profileMenu.hidden) {
+    setProfileMenu(false);
+    profileBtn.focus();
+  }
+  if (e.ctrlKey && e.key === ',') {
+    e.preventDefault();
+    setProfileMenu(false);
+    openSettings();
+  }
+});
+
+/** Показать окно с заголовком и строками «название — значение». */
+function showInfo(title, rows, note) {
+  $('info-title').textContent = title;
+  const body = $('info-body');
+  body.replaceChildren();
+  const table = el('table', 'kv');
+  for (const [k, v] of rows) {
+    const tr = el('tr');
+    tr.append(el('td', null, k));
+    const td = el('td');
+    if (v instanceof Node) td.append(v);
+    else td.textContent = v;
+    tr.append(td);
+    table.append(tr);
+  }
+  body.append(table);
+  if (note) body.append(el('p', 'info-note', note));
+  $('info-dialog').showModal();
+}
+
+const fmt = (n) => Number(n || 0).toLocaleString('ru-RU');
+
+profileMenu.addEventListener('click', async (e) => {
+  const item = e.target.closest('.pop-item');
+  if (!item) return;
+  setProfileMenu(false);
+  const act = item.dataset.act;
+  if (act === 'settings') openSettings();
+  else if (act === 'usage') {
+    const u = await window.d3.usage();
+    const share = u.budget ? Math.min(100, Math.round((u.contextTokens / u.budget) * 100)) : 0;
+    const bar = el('div', 'meter');
+    const fill = el('div', 'meter-fill');
+    fill.style.width = `${share}%`;
+    bar.append(fill);
+    const ctx = el('div');
+    ctx.append(el('div', null, `~${fmt(u.contextTokens)} из ${fmt(u.budget)} токенов (${share}%)`), bar);
+    showInfo(
+      'Использование',
+      [
+        ['Модель', u.model],
+        ['Подключение', u.provider],
+        ['Сессия', u.sessionId],
+        ['Сообщений в истории', fmt(u.messages)],
+        ['Контекст следующего запроса', ctx],
+      ],
+      'Это оценка размера текущего разговора. Сколько запросов осталось на бесплатном ключе, смотрите в кабинете провайдера (для NVIDIA — build.nvidia.com).',
+    );
+  } else if (act === 'workdir' || act === 'help') {
+    const res = await window.d3.openPlace(act);
+    if (!res.ok) addError(`Не удалось открыть: ${res.error || act}`);
+  } else if (act === 'about') {
+    const info = await window.d3.appInfo();
+    showInfo('О программе', [
+      ['d3m3nk0', info.version],
+      ['Electron', info.electron],
+      ['Node.js', info.node],
+      ['Подключение', info.hasKey ? `${info.provider}, ключ задан` : `${info.provider}, ключа нет`],
+    ], 'Десктопный агент для работы с кодом. Аккаунта нет: модель подключена по API-ключу из настроек.');
+  }
+});
 
 $('save-settings').onclick = async (e) => {
   e.preventDefault();
@@ -476,6 +582,7 @@ $('save-settings').onclick = async (e) => {
     return;
   }
   const patch = {
+    displayName: $('s-name').value.trim(),
     provider: $('s-provider').value,
     model: $('s-model').value.trim(),
     baseUrl: $('s-baseurl').value.trim(),
@@ -487,6 +594,7 @@ $('save-settings').onclick = async (e) => {
   await window.d3.setConfig(patch);
   $('settings').close();
   await refreshConfig();
+  await refreshProfile();
   addInfo('Настройки сохранены');
 };
 
@@ -557,6 +665,7 @@ setSidebarWidth(savedSidebar(), false);
 
 (async function init() {
   await refreshConfig();
+  await refreshProfile();
   await refreshSessions();
   showEmptyState();
   input.focus();
