@@ -47,10 +47,17 @@ async function endpointRequest(url, init) {
     if (e.name === 'AbortError' || init?.signal?.aborted) throw e;
     const cause = e.cause;
     const detail = cause ? cause.code || cause.message || String(cause) : e.message;
+    // Опечатка в Base URL — не «нет сети»: fetch даже не пробовал соединиться.
+    if (/Failed to parse URL|Invalid URL/i.test(e.message) || cause?.code === 'ERR_INVALID_URL') {
+      throw new Error(`Неверный адрес сервера: ${url} — проверьте Base URL в настройках или профиле`);
+    }
+    const local = /^https?:\/\/(localhost|127\.0\.0\.1|\[::1\])[:/]/i.test(url);
     const hint =
       detail === 'SELF_SIGNED_CERT_IN_CHAIN'
         ? ' — TLS перехватывает прокси или антивирус; запустите через npm start или с NODE_USE_SYSTEM_CA=1'
-        : '';
+        : local && detail === 'ECONNREFUSED'
+          ? ' — сервер модели на этом компьютере не запущен?'
+          : '';
     throw new Error(`Сеть недоступна: ${url} (${detail})${hint}`);
   }
 }
@@ -134,7 +141,7 @@ async function runAnthropic({ config, system, messages, tools, onText, onToolSta
     method: 'POST',
     headers: {
       'content-type': 'application/json',
-      'x-api-key': config.apiKey,
+      ...(config.apiKey ? { 'x-api-key': config.apiKey } : {}),
       'anthropic-version': '2023-06-01',
     },
     body: JSON.stringify(body),
@@ -270,7 +277,9 @@ async function runOpenAI({ config, system, messages, tools, onText, onToolStart,
       method: 'POST',
       headers: {
         'content-type': 'application/json',
-        authorization: `Bearer ${config.apiKey}`,
+        // Пустой ключ — заголовка нет вовсе: локальные серверы (Ollama и т.п.)
+        // ключ не ждут, а «Bearer » без значения некоторые из них отвергают.
+        ...(config.apiKey ? { authorization: `Bearer ${config.apiKey}` } : {}),
       },
       body: JSON.stringify(payload),
       signal,
@@ -290,7 +299,9 @@ async function runOpenAI({ config, system, messages, tools, onText, onToolStart,
       // Сервер без стриминга: повторяем тот же запрос обычным ответом.
       res = await request({ ...body, stream: false, stream_options: undefined });
     } else {
-      throw new Error(`OpenAI-совместимый API ${status}: ${errText.slice(0, 800)}`);
+      // 404 про модель (у Ollama — «model … not found»): подсказать, что поправить.
+      const hint = status === 404 && /model/i.test(errText) ? ` — модель «${config.model}» не найдена на сервере, проверьте название` : '';
+      throw new Error(`OpenAI-совместимый API ${status}${hint}: ${errText.slice(0, 800)}`);
     }
     if (!res.ok) throw new Error(`OpenAI-совместимый API ${res.status}: ${(await res.text()).slice(0, 800)}`);
   }

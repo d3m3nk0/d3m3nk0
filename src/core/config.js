@@ -37,6 +37,10 @@ const DEFAULTS = {
   fallbackModels: null,
   // «Разрешать всегда» (permissions.js): [{ tool }, { tool: 'run_command', program }]
   alwaysAllow: [],
+  // Профили провайдеров (profiles.js): [{ id, name, provider, baseUrl, model, apiKey }];
+  // activeProfile — id или null (тогда обычные поля provider/baseUrl/model/apiKey выше).
+  profiles: [],
+  activeProfile: null,
 };
 
 function ensureHome() {

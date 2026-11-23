@@ -187,6 +187,16 @@ class Agent {
     this.system = buildSystemPrompt(this.config);
   }
 
+  /**
+   * Сменить подключение (профиль провайдера) на лету: история и MCP остаются.
+   * Только между запросами — посреди ответа отказ, модель не меняется на ходу.
+   */
+  updateConfig(next) {
+    if (this.busy) throw new Error('Агент сейчас отвечает — смените профиль после ответа');
+    this.config = { ...next };
+    this.system = buildSystemPrompt(this.config);
+  }
+
   get history() {
     return this.messages;
   }

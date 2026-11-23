@@ -68,6 +68,7 @@
           <nav class="sv2-nav" aria-label="Разделы настроек">
             <button type="button" data-tab="profile">Профиль</button>
             <button type="button" data-tab="model">Модель и ключ</button>
+            <button type="button" data-tab="profiles">Профили провайдеров</button>
             <button type="button" data-tab="work">Работа и доступ</button>
             <button type="button" data-tab="appearance">Внешний вид</button>
             <div class="sv2-sep"></div>
@@ -85,6 +86,7 @@
 
             <section data-pane="model" hidden>
               <h3>Модель и ключ</h3>
+              <p id="model-profile-note" class="pane-note warn-note" hidden></p>
               <label>Провайдер
                 <select id="s-provider">
                   <option value="anthropic">Anthropic</option>
@@ -107,6 +109,40 @@
                 <textarea id="s-fallback" rows="3" spellcheck="false" placeholder="nvidia/nemotron-3.5-lightning-30b-a3b"></textarea>
               </label>
               <p class="pane-note">Если модель молчит дольше заданного или отвечает «перегружено», агент повторит запрос, а потом попробует запасную модель.</p>
+            </section>
+
+            <section data-pane="profiles" hidden>
+              <h3>Профили провайдеров</h3>
+              <p class="pane-note">Готовые подключения: локальная модель (например, на http://localhost:11434/v1) или API с ключом. Выбор применяется к следующему запросу, без перезапуска. Ключи хранятся только в ~/.d3m3nk0/config.json.</p>
+              <label>Активный профиль
+                <select id="prov-active"></select>
+              </label>
+              <div id="prov-status" class="pane-note" role="status"></div>
+              <div id="prov-list" class="plugin-list"></div>
+
+              <details class="plugin-add" id="prov-add">
+                <summary>+ Добавить профиль</summary>
+                <label>Имя профиля
+                  <input id="prov-name" placeholder="например, Локальная модель" />
+                </label>
+                <label>Тип API
+                  <select id="prov-provider">
+                    <option value="openai">OpenAI-совместимый</option>
+                    <option value="anthropic">Anthropic</option>
+                  </select>
+                </label>
+                <label>Base URL
+                  <input id="prov-baseurl" placeholder="http://localhost:11434/v1" spellcheck="false" />
+                </label>
+                <label>Модель (как её называет сервер)
+                  <input id="prov-model" placeholder="например, deepseek-r1:14b" spellcheck="false" />
+                </label>
+                <label>API-ключ (для локальной модели — пусто)
+                  <input id="prov-key" type="password" autocomplete="off" />
+                </label>
+                <div id="prov-error" class="field-error" hidden></div>
+                <div class="dialog-actions"><button type="button" id="prov-add-btn">Добавить профиль</button></div>
+              </details>
             </section>
 
             <section data-pane="work" hidden>

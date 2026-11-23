@@ -10,6 +10,10 @@ contextBridge.exposeInMainWorld('d3', {
   loadSession: (id) => ipcRenderer.invoke('session:load', id),
   sessionMenu: (id, pinned) => ipcRenderer.invoke('session:menu', { id, pinned }),
   renameSession: (id, name) => ipcRenderer.invoke('session:rename', { id, name }),
+  // Профили провайдеров: ключ уходит в главный процесс и обратно в окно не возвращается.
+  saveProfile: (profile) => ipcRenderer.invoke('profiles:save', profile),
+  deleteProfile: (id) => ipcRenderer.invoke('profiles:delete', id),
+  activateProfile: (id) => ipcRenderer.invoke('profiles:activate', id),
   modelMenu: () => ipcRenderer.invoke('model:menu'),
   openExternal: (url) => ipcRenderer.invoke('shell:open', url),
   appInfo: () => ipcRenderer.invoke('app:info'),

@@ -12,6 +12,7 @@ const fs = require('node:fs');
 const os = require('node:os');
 const path = require('node:path');
 const { loadConfig, saveConfig } = require('../core/config');
+const profiles = require('../core/profiles');
 const { Session } = require('../core/session');
 const { McpManager, describePlugins } = require('../core/mcp');
 const { Agent } = require('../core/agent');
@@ -25,6 +26,8 @@ if (process.env.D3M3NK0_SCREENSHOT) app.disableHardwareAcceleration();
 
 let win = null;
 let config = loadConfig();
+// Настройки, по которым идут запросы: активный профиль провайдера поверх обычных полей.
+const live = () => profiles.effectiveConfig(config);
 let session = new Session();
 let mcp = new McpManager();
 let agent = null;
@@ -129,7 +132,7 @@ async function doBuildAgent({ history = [] } = {}) {
     });
   }
   agent = new Agent({
-    config, session, mcp, emit, askPermission, imageResizer: resizeImage, imageCropper: cropImage,
+    config: live(), session, mcp, emit, askPermission, imageResizer: resizeImage, imageCropper: cropImage,
     onConfigChange: (patch) => {
       config = saveConfig(patch);
     },
@@ -271,18 +274,71 @@ app.on('before-quit', async () => {
 
 /* ---------------------------------- IPC ---------------------------------- */
 
-ipcMain.handle('config:get', () => ({
-  ...config,
-  apiKey: config.apiKey ? '••••••••' : '',
-  hasKey: !!config.apiKey,
-}));
+ipcMain.handle('config:get', () => {
+  const cur = live();
+  return {
+    ...config,
+    apiKey: config.apiKey ? '••••••••' : '',
+    hasKey: !!config.apiKey,
+    profiles: profiles.maskProfiles(config.profiles), // ключи профилей в окно не уходят
+    live: { provider: cur.provider, model: cur.model, baseUrl: cur.baseUrl, profile: cur.activeProfileName },
+  };
+});
 
 ipcMain.handle('config:set', async (_e, patch) => {
   const clean = { ...patch };
   if (!clean.apiKey || clean.apiKey.startsWith('••')) delete clean.apiKey;
+  // Профили меняются только своими командами (profiles:*) — с проверкой и без ключей в окне.
+  delete clean.profiles;
+  delete clean.activeProfile;
   config = saveConfig(clean);
   await buildAgent({ history: agent?.history || [] });
-  return { ok: true, workdir: config.workdir, model: config.model, provider: config.provider };
+  const cur = live();
+  return { ok: true, workdir: cur.workdir, model: cur.model, provider: cur.provider };
+});
+
+/* ------------------------- профили провайдеров (Пункт 11) ------------------------ */
+
+const profilesView = () => ({ profiles: profiles.maskProfiles(config.profiles), active: config.activeProfile || null });
+
+// Добавить профиль. Ключ остаётся только в config.json — в окно возвращается без него.
+ipcMain.handle('profiles:save', (_e, raw) => {
+  try {
+    const p = profiles.normalizeProfile(raw);
+    config = saveConfig({ profiles: [...(Array.isArray(config.profiles) ? config.profiles : []), p] });
+    return { ok: true, id: p.id, ...profilesView() };
+  } catch (e) {
+    return { ok: false, error: e.message };
+  }
+});
+
+ipcMain.handle('profiles:delete', (_e, id) => {
+  if (id && id === config.activeProfile) return { ok: false, error: 'Это активный профиль — сначала выберите другой' };
+  config = saveConfig({ profiles: (config.profiles || []).filter((p) => p.id !== id) });
+  return { ok: true, ...profilesView() };
+});
+
+/**
+ * Выбрать активный профиль (null — обычные настройки «Модель и ключ»).
+ * Сначала проверка сервера: недоступен, неверный адрес, нет модели — профиль НЕ
+ * включается, остаётся прежний (автопереключения нет). Посреди ответа — отказ.
+ * Применяется к следующему запросу без перезапуска: история и MCP остаются.
+ */
+ipcMain.handle('profiles:activate', async (_e, id) => {
+  if (agent?.busy) return { ok: false, error: 'Агент сейчас отвечает — смените профиль после ответа', ...profilesView() };
+  let warning = null;
+  if (id) {
+    const p = profiles.findProfile(config, id);
+    if (!p) return { ok: false, error: 'Профиль не найден', ...profilesView() };
+    const probe = await profiles.probeProfile(p);
+    if (!probe.ok) return { ok: false, error: probe.error, ...profilesView() };
+    warning = probe.warning || null;
+  }
+  if (agent?.busy) return { ok: false, error: 'Агент начал отвечать — смените профиль после ответа', ...profilesView() };
+  config = saveConfig({ activeProfile: id || null });
+  agent?.updateConfig(live());
+  const cur = live();
+  return { ok: true, warning, live: { provider: cur.provider, model: cur.model, profile: cur.activeProfileName }, ...profilesView() };
 });
 
 ipcMain.handle('session:list', () => Session.list().map((s) => ({ ...s, current: s.id === session.id })));
@@ -298,17 +354,24 @@ function quickModels(cfg) {
 ipcMain.handle('model:menu', () => {
   return new Promise((resolve) => {
     let choice = null;
-    const template = quickModels(config).map((m) => ({
+    const cur = live();
+    // С профилем модель задаётся в профиле: в меню только она, смена — в «Профилях провайдеров».
+    const template = (cur.activeProfileName ? [cur.model] : quickModels(config)).map((m) => ({
       label: m,
       type: 'radio',
-      checked: m === config.model,
+      checked: m === cur.model,
       click: () => (choice = { model: m }),
     }));
-    template.push({ type: 'separator' }, { label: 'Другая модель… (Настройки)', click: () => (choice = { openSettings: true }) });
+    template.push(
+      { type: 'separator' },
+      cur.activeProfileName
+        ? { label: `Профиль «${cur.activeProfileName}» — сменить…`, click: () => (choice = { openSettings: true, tab: 'profiles' }) }
+        : { label: 'Другая модель… (Настройки)', click: () => (choice = { openSettings: true }) },
+    );
     Menu.buildFromTemplate(template).popup({
       window: win,
       callback: () => {
-        if (!choice?.model || choice.model === config.model) return resolve(choice || {});
+        if (!choice?.model || choice.model === cur.model) return resolve(choice || {});
         if (agent?.busy) return resolve({ error: 'Агент сейчас работает. Остановите его и смените модель.' });
         config = saveConfig({ model: choice.model });
         agent?.setModel(config.model);
@@ -335,8 +398,9 @@ function providerLabel(cfg) {
 // Меню профиля внизу слева: имя, через кого подключена модель, есть ли ключ.
 ipcMain.handle('app:info', () => ({
   name: (config.displayName || '').trim() || os.userInfo().username,
-  provider: providerLabel(config),
-  hasKey: !!config.apiKey,
+  provider: live().activeProfileName || providerLabel(live()),
+  // Профиль без ключа (локальная модель) — нормально, предупреждение «нет ключа» не нужно.
+  hasKey: !!live().apiKey || !!live().activeProfileName,
   version: app.getVersion(),
   electron: process.versions.electron,
   node: process.versions.node,
@@ -348,8 +412,8 @@ ipcMain.handle('usage:get', () => ({
   messages: agent ? agent.history.length : 0,
   contextTokens: agent ? agent.requestTokens() : 0,
   budget: config.contextBudget,
-  model: config.model,
-  provider: providerLabel(config),
+  model: live().model,
+  provider: live().activeProfileName || providerLabel(live()),
 }));
 
 // Вложения: вставленный скриншот (байты) или перетащенный файл (путь) → в рабочую папку.

@@ -933,6 +933,129 @@ async function main() {
     }
   });
 
+  /* ------------------- профили провайдеров (Пункт 11) ------------------- */
+
+  const prof = require('../src/core/profiles');
+  const profCfg = () => ({ ...loadConfig(), provider: 'openai', baseUrl: llm.url('stream'), apiKey: 'base-key', model: 'model-ok', workdir: TMP_ROOT, mcpServers: {}, retryDelayMs: 50 });
+
+  await check('профили: добавление, проверка полей, наложение поверх настроек, ключи не уходят в окно', () => {
+    const p = prof.normalizeProfile({ name: '  Локальная  модель ', baseUrl: 'http://localhost:11434/v1/', model: 'deepseek-r1:14b', apiKey: '' });
+    assert.ok(p.id && p.name === 'Локальная модель' && p.baseUrl === 'http://localhost:11434/v1' && p.provider === 'openai' && p.apiKey === '');
+    for (const [raw, msg] of [
+      [{ name: '', baseUrl: 'http://x', model: 'm' }, /имя профиля/],
+      [{ name: 'a', baseUrl: 'localhost:11434', model: 'm' }, /Неверный адрес|http:\/\//],
+      [{ name: 'a', baseUrl: 'ftp://x', model: 'm' }, /http:\/\/ или https:\/\//],
+      [{ name: 'a', baseUrl: 'http://x', model: ' ' }, /модель/],
+      [{ name: 'a', baseUrl: 'http://x', model: 'm', provider: 'evil' }, /Неизвестный тип/],
+    ]) assert.throws(() => prof.normalizeProfile(raw), msg, JSON.stringify(raw));
+
+    const cfg = { ...profCfg(), profiles: [p, prof.normalizeProfile({ name: 'API', baseUrl: 'https://api.example/v1', model: 'big', apiKey: 'sk-secret' })] };
+    assert.strictEqual(prof.effectiveConfig(cfg).model, 'model-ok', 'без activeProfile — обычные настройки');
+    const live = prof.effectiveConfig({ ...cfg, activeProfile: p.id });
+    assert.deepStrictEqual([live.baseUrl, live.model, live.apiKey, live.activeProfileName], ['http://localhost:11434/v1', 'deepseek-r1:14b', '', 'Локальная модель']);
+    assert.deepStrictEqual(live.fallbackModels, [], 'у профиля автопереключение на запасные модели');
+    assert.strictEqual(cfg.baseUrl, llm.url('stream'), 'профиль перетёр обычные настройки');
+    const masked = prof.maskProfiles(cfg.profiles);
+    assert.ok(!JSON.stringify(masked).includes('sk-secret') && masked[1].hasKey === true && masked[0].hasKey === false, 'ключ ушёл в окно');
+  });
+
+  await check('профили: пустой ключ — заголовка Authorization нет; с ключом — Bearer', async () => {
+    const noKey = new Agent({ config: { ...profCfg(), apiKey: '' }, session: null, mcp: null });
+    const before = llm.requests.length;
+    await noKey.send('ответь');
+    assert.strictEqual(llm.requests[before].authorization, null, `ушёл заголовок: ${llm.requests[before].authorization}`);
+    const withKey = new Agent({ config: { ...profCfg(), apiKey: 'sk-test' }, session: null, mcp: null });
+    await withKey.send('ответь');
+    assert.strictEqual(llm.requests.at(-1).authorization, 'Bearer sk-test');
+    const probe = await prof.probeProfile({ provider: 'openai', baseUrl: llm.url('stream'), model: 'model-ok', apiKey: '' });
+    assert.ok(probe.ok, probe.error);
+    assert.strictEqual(llm.modelListRequests.at(-1).authorization, null, 'проверка профиля без ключа отправила заголовок');
+  });
+
+  await check('профили: недоступный сервер — понятная ошибка быстро, агент не завис', async () => {
+    // Свободный порт, на котором никто не слушает, — как незапущенный локальный сервер.
+    // (Порт 9 не годится: fetch считает его запрещённым и не соединяется вовсе.)
+    const closedPort = await new Promise((resolve) => {
+      const srv = require('node:net').createServer().listen(0, '127.0.0.1', () => {
+        const { port } = srv.address();
+        srv.close(() => resolve(port));
+      });
+    });
+    const deadUrl = `http://127.0.0.1:${closedPort}/v1`;
+    const t0 = Date.now();
+    const probe = await prof.probeProfile({ provider: 'openai', baseUrl: deadUrl, model: 'm', apiKey: '' });
+    assert.ok(!probe.ok && probe.error.startsWith(`Сервер не отвечает: ${deadUrl} (ECONNREFUSED)`) && /запущена\?/.test(probe.error), probe.error);
+    assert.ok(Date.now() - t0 < 5000, 'проверка шла дольше 5 с');
+
+    const errors = [];
+    const agent = new Agent({ config: { ...profCfg(), baseUrl: deadUrl, apiKey: '', fallbackModels: [] }, session: null, mcp: null, emit: (e) => e.type === 'error' && errors.push(e.message) });
+    const t1 = Date.now();
+    await agent.send('ответь');
+    assert.ok(errors.some((m) => m.includes(`Сеть недоступна: ${deadUrl}/chat/completions (ECONNREFUSED) — сервер модели на этом компьютере не запущен?`)), errors.join(' | '));
+    assert.strictEqual(agent.busy, false, 'агент остался занятым');
+    assert.ok(Date.now() - t1 < 10000, 'ошибка пришла слишком поздно');
+
+    const bad = new Agent({ config: { ...profCfg(), baseUrl: 'не адрес', fallbackModels: [] }, session: null, mcp: null, emit: (e) => e.type === 'error' && errors.push(e.message) });
+    await bad.send('ответь');
+    assert.ok(errors.some((m) => /Неверный адрес сервера/.test(m)), errors.join(' | '));
+  });
+
+  await check('профили: модели нет — проверка не пускает, запрос даёт понятную 404; неверный ключ — отказ', async () => {
+    const missing = await prof.probeProfile({ provider: 'openai', baseUrl: llm.url('stream'), model: 'нет-такой', apiKey: '' });
+    assert.ok(!missing.ok && /Модель «нет-такой» не найдена на сервере\. Есть: model-ok/.test(missing.error), missing.error);
+    const nolist = await prof.probeProfile({ provider: 'openai', baseUrl: llm.url('nomodels'), model: 'x', apiKey: '' });
+    assert.ok(nolist.ok && /не проверено/.test(nolist.warning), JSON.stringify(nolist));
+    const badkey = await prof.probeProfile({ provider: 'openai', baseUrl: llm.url('badkey'), model: 'x', apiKey: 'wrong' });
+    assert.ok(!badkey.ok && /отклонил ключ \(401\)/.test(badkey.error), JSON.stringify(badkey));
+    const errors = [];
+    const agent = new Agent({ config: { ...profCfg(), model: 'model-404', fallbackModels: [] }, session: null, mcp: null, emit: (e) => e.type === 'error' && errors.push(e.message) });
+    await agent.send('ответь');
+    assert.ok(errors.some((m) => /404 — модель «model-404» не найдена на сервере/.test(m)), errors.join(' | '));
+  });
+
+  await check('профили: смена без перезапуска — следующий запрос уходит на новый профиль, история цела', async () => {
+    const other = await startFakeLlm({ chunkDelayMs: 20, models: ['local-model'] });
+    try {
+      const a = prof.normalizeProfile({ name: 'A', baseUrl: llm.url('stream'), model: 'model-ok', apiKey: 'sk-a' });
+      const b = prof.normalizeProfile({ name: 'B', baseUrl: other.url('stream'), model: 'local-model', apiKey: '' });
+      const cfg = { ...profCfg(), profiles: [a, b], activeProfile: a.id };
+      const agent = new Agent({ config: prof.effectiveConfig(cfg), session: null, mcp: null });
+      const beforeA = llm.requests.length;
+      await agent.send('первый вопрос');
+      assert.strictEqual(llm.requests.length - beforeA, 1, 'первый запрос не ушёл на A');
+      agent.updateConfig(prof.effectiveConfig({ ...cfg, activeProfile: b.id }));
+      await agent.send('второй вопрос');
+      assert.strictEqual(llm.requests.length - beforeA, 1, 'второй запрос ушёл на A');
+      assert.strictEqual(other.requests.length, 1, 'второй запрос не дошёл до B');
+      assert.deepStrictEqual([other.requests[0].model, other.requests[0].authorization], ['local-model', null]);
+      assert.ok(other.requests[0].roles.filter((r) => r === 'user').length === 2, 'история не дошла до нового профиля');
+      // Посреди ответа смена запрещена.
+      const p = agent.send('третий');
+      assert.throws(() => agent.updateConfig(prof.effectiveConfig(cfg)), /смените профиль после ответа/);
+      await p;
+    } finally {
+      await other.close();
+    }
+  });
+
+  await check('профили: счётчик токенов от OpenAI-совместимого профиля без ключа', async () => {
+    const local = await startFakeLlm({ chunkDelayMs: 10, models: ['local-model'] });
+    try {
+      const p = prof.normalizeProfile({ name: 'Локальная', baseUrl: local.url('stream'), model: 'local-model', apiKey: '' });
+      let usage = null;
+      const agent = new Agent({
+        config: prof.effectiveConfig({ ...profCfg(), profiles: [p], activeProfile: p.id }),
+        session: null, mcp: null,
+        emit: (e) => e.type === 'assistant_message' && (usage = e.usage),
+      });
+      await agent.send('ответь');
+      assert.deepStrictEqual(local.requests[0].streamOptions, { include_usage: true }, 'не попросили usage');
+      assert.deepStrictEqual(usage, { input: 1200, output: 34, cacheRead: 900, cacheWrite: 0 }, JSON.stringify(usage));
+    } finally {
+      await local.close();
+    }
+  });
+
   /* ------------------------- «Разрешать всегда» ------------------------- */
 
   const perms = require('../src/core/permissions');

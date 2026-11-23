@@ -353,7 +353,15 @@ let mcpToolsKnown = false;
 async function refreshConfig() {
   const cfg = await window.d3.getConfig();
   currentConfig = cfg;
-  $('model-badge').textContent = `${cfg.provider} · ${cfg.model}`;
+  // Шапка — по действующим настройкам: активный профиль поверх «Модель и ключ».
+  const cur = cfg.live || cfg;
+  $('model-badge').textContent = `${cur.profile || cur.provider} · ${cur.model}`;
+  $('model-badge').title = `Сменить модель${cur.baseUrl ? `\n${cur.baseUrl}` : ''}`;
+  const note = $('model-profile-note');
+  note.hidden = !cur.profile;
+  note.textContent = cur.profile
+    ? `Сейчас активен профиль «${cur.profile}». Поля ниже используются, когда в «Профилях провайдеров» выбрано «Без профиля».`
+    : '';
   $('workdir-badge').textContent = cfg.workdir;
   $('workdir-badge').title = cfg.workdir;
   // Пока MCP не прислал статус, показываем число серверов; потом — число
@@ -673,8 +681,8 @@ $('model-badge').onclick = async () => {
   const res = await window.d3.modelMenu();
   if (res.error) addError(res.error);
   if (res.openSettings) {
-    await openSettings('model');
-    $('s-model').focus();
+    await openSettings(res.tab || 'model');
+    if (!res.tab) $('s-model').focus();
     return;
   }
   if (res.model) {
@@ -708,11 +716,103 @@ async function openSettings(tab = 'profile') {
   $('pa-error').hidden = true;
   $('mcp-json-error').hidden = true;
   renderLook();
+  renderProviderProfiles({ profiles: currentConfig?.profiles || [], active: currentConfig?.activeProfile || null });
+  setProvStatus('');
+  $('prov-error').hidden = true;
   selectTab(tab);
   settingsDlg.showModal();
   settingsDlg.querySelector('.sv2-nav .active')?.focus(); // а не крестик «Закрыть»
   await renderPlugins();
 }
+
+/* ----------------------- профили провайдеров (Пункт 11) ----------------------- */
+
+// Профили применяются сразу (не по «Сохранить»): выбор проверяет сервер в главном
+// процессе; не прошёл — активным остаётся прежний, в выпадающем списке тоже.
+let provActive = null;
+
+function setProvStatus(text, kind = '') {
+  const s = $('prov-status');
+  s.textContent = text;
+  s.className = `pane-note${kind ? ` prov-${kind}` : ''}`;
+}
+
+function renderProviderProfiles({ profiles, active }) {
+  provActive = active || null;
+  const sel = $('prov-active');
+  sel.replaceChildren(new Option('— Без профиля: настройки «Модель и ключ» —', ''));
+  for (const p of profiles) sel.append(new Option(`${p.name} — ${p.model}`, p.id));
+  sel.value = provActive || '';
+
+  const list = $('prov-list');
+  list.replaceChildren();
+  if (!profiles.length) {
+    list.append(el('div', 'pane-note', 'Профилей пока нет. Добавьте первый ниже.'));
+    return;
+  }
+  for (const p of profiles) {
+    const row = el('div', 'plugin');
+    row.dataset.id = p.id;
+    row.append(el('div', 'plugin-icon', (p.name.trim()[0] || '?').toUpperCase()));
+    const text = el('div', 'plugin-text');
+    text.append(el('div', 'plugin-name', p.name + (p.id === provActive ? ' · активен' : '')));
+    text.append(el('div', 'plugin-sub', `${p.model} · ${p.baseUrl} · ${p.hasKey ? 'ключ задан' : 'без ключа'}`));
+    const del = el('button', 'ghost icon-btn', '✕');
+    del.type = 'button';
+    del.title = p.id === provActive ? 'Активный профиль: сначала выберите другой' : 'Удалить профиль';
+    del.setAttribute('aria-label', `Удалить профиль ${p.name}`);
+    del.disabled = p.id === provActive;
+    del.onclick = async () => {
+      if (!confirm(`Удалить профиль «${p.name}»? Ключ из него тоже будет удалён.`)) return;
+      const res = await window.d3.deleteProfile(p.id);
+      if (!res.ok) return setProvStatus(res.error, 'err');
+      renderProviderProfiles(res);
+      setProvStatus(`Профиль «${p.name}» удалён`, 'ok');
+    };
+    row.append(text, del);
+    list.append(row);
+  }
+}
+
+$('prov-active').onchange = async () => {
+  const sel = $('prov-active');
+  const id = sel.value || null;
+  sel.disabled = true;
+  setProvStatus(id ? 'Проверяю сервер профиля…' : 'Переключаю…');
+  const res = await window.d3.activateProfile(id);
+  sel.disabled = false;
+  renderProviderProfiles(res);
+  if (!res.ok) {
+    setProvStatus(`Профиль не включён: ${res.error}`, 'err');
+    return;
+  }
+  const what = res.live?.profile ? `профиль «${res.live.profile}» (${res.live.model})` : `настройки «Модель и ключ» (${res.live?.model})`;
+  setProvStatus(`Активно: ${what}.${res.warning ? ` ${res.warning}.` : ''} Применится к следующему запросу.`, res.warning ? 'warn' : 'ok');
+  await refreshConfig();
+  await refreshProfile();
+  addInfo(`Подключение: ${what}`);
+};
+
+$('prov-add-btn').onclick = async () => {
+  const err = $('prov-error');
+  const res = await window.d3.saveProfile({
+    name: $('prov-name').value,
+    provider: $('prov-provider').value,
+    baseUrl: $('prov-baseurl').value,
+    model: $('prov-model').value,
+    apiKey: $('prov-key').value,
+  });
+  if (!res.ok) {
+    err.textContent = res.error;
+    err.hidden = false;
+    return;
+  }
+  err.hidden = true;
+  for (const id of ['prov-name', 'prov-baseurl', 'prov-model', 'prov-key']) $(id).value = '';
+  renderProviderProfiles(res);
+  setProvStatus('Профиль добавлен. Выберите его в списке «Активный профиль», чтобы включить.', 'ok');
+};
+for (const id of ['prov-name', 'prov-baseurl', 'prov-model', 'prov-key']) $(id).addEventListener('input', () => ($('prov-error').hidden = true));
 
 /* ------------------------------ плагины (MCP) ----------------------------- */
 

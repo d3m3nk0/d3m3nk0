@@ -67,17 +67,35 @@ function startFakeLlm(opts = {}) {
   const cutAfter = opts.cutAfter ?? 3;
   const headerDelayMs = opts.headerDelayMs ?? 1500;
   const requests = [];
+  // Список моделей (GET /v1/models, как у Ollama) — для проверки профиля при выборе.
+  const models = opts.models ?? ['model-ok'];
+  const modelListRequests = [];
 
   const server = http.createServer(async (req, res) => {
     let body = '';
     for await (const c of req) body += c;
-    const payload = JSON.parse(body || '{}');
     const mode = req.url.split('/')[1];
+    if (req.method === 'GET' && /\/models\/?$/.test(req.url)) {
+      modelListRequests.push({ mode, authorization: req.headers.authorization ?? null });
+      if (mode === 'nomodels') {
+        res.writeHead(404, { 'content-type': 'application/json' });
+        return res.end(JSON.stringify({ error: { message: 'not found' } }));
+      }
+      if (mode === 'badkey') {
+        res.writeHead(401, { 'content-type': 'application/json' });
+        return res.end(JSON.stringify({ error: { message: 'invalid api key' } }));
+      }
+      res.writeHead(200, { 'content-type': 'application/json' });
+      return res.end(JSON.stringify({ object: 'list', data: models.map((id) => ({ id, object: 'model' })) }));
+    }
+    const payload = JSON.parse(body || '{}');
     // Для проверок картинок: порядок ролей и data-URL всех image_url в запросе.
     const msgsIn = payload.messages || [];
     const images = msgsIn.flatMap((m) => (Array.isArray(m.content) ? m.content : []).filter((c) => c.type === 'image_url').map((c) => c.image_url.url));
     requests.push({
       mode,
+      // Заголовок ключа: для профиля без ключа его не должно быть вовсе.
+      authorization: req.headers.authorization ?? null,
       model: payload.model,
       stream: !!payload.stream,
       streamOptions: payload.stream_options ?? null,
@@ -96,6 +114,11 @@ function startFakeLlm(opts = {}) {
     if (payload.model === 'model-429') {
       res.writeHead(429, { 'content-type': 'application/json' });
       return res.end(JSON.stringify({ error: { message: 'Too Many Requests' } }));
+    }
+    // Как Ollama, когда модель не скачана.
+    if (payload.model === 'model-404') {
+      res.writeHead(404, { 'content-type': 'application/json' });
+      return res.end(JSON.stringify({ error: { message: 'model "model-404" not found, try pulling it first' } }));
     }
 
     const withUsage = mode !== 'nousage' && mode !== 'nooptions'; // без usage: проверка прочерка
@@ -203,6 +226,7 @@ function startFakeLlm(opts = {}) {
         port,
         url: (mode = 'stream') => `http://127.0.0.1:${port}/${mode}/v1`,
         requests,
+        modelListRequests,
         close: () => new Promise((r) => server.close(r)),
       });
     });

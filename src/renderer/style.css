@@ -718,3 +718,10 @@ body.dropping footer #input { border-color: var(--accent); box-shadow: 0 0 0 2px
 }
 .session-rename.invalid { border-color: var(--err); }
 .session-rename.invalid::placeholder { color: var(--err); }
+
+/* Профили провайдеров */
+#prov-status.prov-ok { color: var(--ok); }
+#prov-status.prov-err { color: var(--err); }
+#prov-status.prov-warn { color: var(--warn); }
+.warn-note { color: var(--warn); }
+.warn-note[hidden] { display: none; }

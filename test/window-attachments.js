@@ -460,6 +460,86 @@ async function main() {
       assert.strictEqual(fs.readFileSync(path.join(sessionsDir, `${first.id}.jsonl`), 'utf8'), journal, 'журнал изменился от пустого имени или Esc');
     });
 
+    // Профили провайдеров (Пункт 11): форма → выбор в списке → следующий запрос уходит
+    // на новый сервер без заголовка ключа, счётчик токенов виден; недоступный профиль
+    // не включается, прежний остаётся. Ключ профиля в окно не попадает.
+    await check('профили: добавить и выбрать в окне, запрос без ключа, счётчик; недоступный — не включается', async () => {
+      const { startFakeLlm } = require('./helpers/fake-llm');
+      const local = await startFakeLlm({ chunkDelayMs: 20, models: ['local-model'] });
+      const closedPort = await new Promise((resolve) => {
+        const srv = require('node:net').createServer().listen(0, '127.0.0.1', () => {
+          const { port } = srv.address();
+          srv.close(() => resolve(port));
+        });
+      });
+      const waitStatus = async () => {
+        for (let i = 0; i < 40; i++) {
+          await sleep(150);
+          const st = await evaluate(`({ text: document.getElementById('prov-status').textContent, cls: document.getElementById('prov-status').className, disabled: document.getElementById('prov-active').disabled })`);
+          if (!st.disabled && !/Проверяю|Переключаю/.test(st.text)) return st;
+        }
+        throw new Error('статус профиля не обновился');
+      };
+      const addProfile = async (p) =>
+        evaluate(`(async () => {
+          document.getElementById('prov-add').open = true;
+          document.getElementById('prov-name').value = ${JSON.stringify(p.name)};
+          document.getElementById('prov-provider').value = 'openai';
+          document.getElementById('prov-baseurl').value = ${JSON.stringify(p.baseUrl)};
+          document.getElementById('prov-model').value = ${JSON.stringify(p.model)};
+          document.getElementById('prov-key').value = ${JSON.stringify(p.apiKey || '')};
+          document.getElementById('prov-add-btn').click();
+          await new Promise((r) => setTimeout(r, 400));
+          const opt = [...document.getElementById('prov-active').options].find((o) => o.textContent.startsWith(${JSON.stringify(p.name)}));
+          return { id: opt ? opt.value : null, err: document.getElementById('prov-error').hidden ? '' : document.getElementById('prov-error').textContent };
+        })()`);
+      const choose = async (id) =>
+        evaluate(`(() => { const s = document.getElementById('prov-active'); s.value = ${JSON.stringify(id)}; s.dispatchEvent(new Event('change')); })()`);
+      try {
+        await evaluate(`openSettings('profiles')`);
+        await sleep(300);
+
+        // 1) Добавить локальный профиль без ключа и выбрать его.
+        const added = await addProfile({ name: 'Локальная модель', baseUrl: local.url('stream'), model: 'local-model' });
+        assert.ok(added.id && !added.err, `профиль не добавлен: ${JSON.stringify(added)}`);
+        await choose(added.id);
+        const st = await waitStatus();
+        assert.ok(/prov-ok/.test(st.cls) && /Локальная модель/.test(st.text), `профиль не включился: ${st.text}`);
+        assert.ok((await evaluate(`document.getElementById('model-badge').textContent`)).startsWith('Локальная модель · local-model'), 'шапка не показывает профиль');
+
+        // 2) Следующий запрос — на новый сервер, без Authorization; счётчик токенов виден.
+        await evaluate(`document.getElementById('settings').close()`);
+        await evaluate(`document.getElementById('input').value = 'ответь через профиль'; document.getElementById('send').click();`);
+        let meta = '';
+        for (let i = 0; i < 40 && !meta; i++) {
+          await sleep(250);
+          meta = await evaluate(`(() => { const m = [...document.querySelectorAll('#transcript .msg-meta')].pop(); return m && !document.getElementById('send').disabled ? m.textContent : ''; })()`);
+        }
+        assert.strictEqual(local.requests.length, 1, `запросов к профилю: ${local.requests.length}`);
+        assert.deepStrictEqual([local.requests[0].model, local.requests[0].authorization], ['local-model', null], 'ушёл заголовок ключа или не та модель');
+        assert.match(meta, /токены: ↑ 1\s200 · ↓ 34 · кэш 900/, `строка расхода: «${meta}»`);
+
+        // 3) Недоступный профиль (с ключом): не включается, прежний остаётся; ключ не в окне.
+        await evaluate(`openSettings('profiles')`);
+        await sleep(300);
+        const dead = await addProfile({ name: 'Не запущен', baseUrl: `http://127.0.0.1:${closedPort}/v1`, model: 'x', apiKey: 'sk-window-secret' });
+        assert.ok(dead.id, 'второй профиль не добавлен');
+        await choose(dead.id);
+        const st2 = await waitStatus();
+        assert.ok(/prov-err/.test(st2.cls) && /Профиль не включён: Сервер не отвечает/.test(st2.text), `нет понятной ошибки: ${st2.text}`);
+        assert.strictEqual(await evaluate(`document.getElementById('prov-active').value`), added.id, 'в списке остался недоступный профиль');
+        assert.ok((await evaluate(`document.getElementById('model-badge').textContent`)).startsWith('Локальная модель'), 'шапка сменилась');
+        const saved = JSON.parse(fs.readFileSync(path.join(HOME, 'config.json'), 'utf8'));
+        assert.strictEqual(saved.activeProfile, added.id, 'активным стал недоступный профиль');
+        assert.ok(JSON.stringify(saved.profiles).includes('sk-window-secret'), 'ключ не сохранён в config.json');
+        const inWindow = await evaluate(`(async () => document.body.innerHTML.includes('sk-window-secret') || JSON.stringify(await window.d3.getConfig()).includes('sk-window-secret'))()`);
+        assert.strictEqual(inWindow, false, 'ключ профиля попал в окно');
+        await evaluate(`document.getElementById('settings').close()`);
+      } finally {
+        await local.close();
+      }
+    });
+
     await check('в консоли окна нет ошибок (CSP, обработчики)', async () => {
       const errors = cdp.events
         .filter((e) => e.method === 'Runtime.exceptionThrown' || (e.method === 'Log.entryAdded' && e.params.entry.level === 'error'))
