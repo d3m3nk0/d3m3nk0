@@ -29,6 +29,12 @@ const DEFAULTS = {
   // обрезанными (начало + конец). Журнал сессии хранит их полностью. 0 — не резать.
   toolResultTruncateTokens: 400,
   mcpServers: {},
+  // Устойчивость (resilience.js): сколько ждать первого ответа и тишины в потоке,
+  // пауза перед повтором; запасные модели (null — для NVIDIA быстрые по умолчанию).
+  responseTimeoutMs: 60000,
+  idleTimeoutMs: 90000,
+  retryDelayMs: 2000,
+  fallbackModels: null,
 };
 
 function ensureHome() {

@@ -15,6 +15,7 @@ const { loadConfig, saveConfig } = require('../core/config');
 const { Session } = require('../core/session');
 const { McpManager, describePlugins } = require('../core/mcp');
 const { Agent } = require('../core/agent');
+const { NVIDIA_FAST_MODELS } = require('../core/resilience');
 
 // Режим скриншота: GPU-композитинг в удалённой сессии не отдаёт кадр
 // (capturePage падает с UnknownVizError), поэтому рисуем программно.
@@ -263,13 +264,7 @@ ipcMain.handle('config:set', async (_e, patch) => {
 
 ipcMain.handle('session:list', () => Session.list().map((s) => ({ ...s, current: s.id === session.id })));
 
-// Быстрые модели NVIDIA с вызовом инструментов (замер ноября 2026: ответ за 0,3–2,4 с).
-// Свой список можно задать в config.json полем "models": [...].
-const NVIDIA_FAST_MODELS = [
-  'nvidia/nemotron-3.5-super-vl-120b-a12b',
-  'nvidia/nemotron-3.5-lightning-30b-a3b',
-  'mistralai/mistral-large-4-1t-a52b',
-];
+// Быстрые модели NVIDIA — общий список в core/resilience.js (они же запасные).
 
 function quickModels(cfg) {
   const list = Array.isArray(cfg.models) && cfg.models.length ? cfg.models : /nvidia/i.test(cfg.baseUrl) ? NVIDIA_FAST_MODELS : [];

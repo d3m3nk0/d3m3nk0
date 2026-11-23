@@ -66,7 +66,19 @@ function startFakeLlm(opts = {}) {
     // Для проверок картинок: порядок ролей и data-URL всех image_url в запросе.
     const msgsIn = payload.messages || [];
     const images = msgsIn.flatMap((m) => (Array.isArray(m.content) ? m.content : []).filter((c) => c.type === 'image_url').map((c) => c.image_url.url));
-    requests.push({ mode, stream: !!payload.stream, text: lastUserText(payload), roles: msgsIn.map((m) => m.role), images });
+    requests.push({ mode, model: payload.model, stream: !!payload.stream, text: lastUserText(payload), roles: msgsIn.map((m) => m.role), images });
+
+    // Поведение по имени модели (тесты устойчивости):
+    //   model-silent — не отвечает вовсе, пока клиент не оборвёт соединение;
+    //   model-429    — всегда «перегружено».
+    if (payload.model === 'model-silent') {
+      req.on('close', () => res.destroy());
+      return;
+    }
+    if (payload.model === 'model-429') {
+      res.writeHead(429, { 'content-type': 'application/json' });
+      return res.end(JSON.stringify({ error: { message: 'Too Many Requests' } }));
+    }
 
     const whole = () => {
       res.writeHead(200, { 'content-type': 'application/json' });

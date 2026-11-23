@@ -304,6 +304,8 @@ async function refreshConfig() {
   $('s-model').value = cfg.model;
   $('s-baseurl').value = cfg.baseUrl;
   $('s-apikey').value = cfg.apiKey || '';
+  $('s-timeout').value = Math.round((cfg.responseTimeoutMs || 60000) / 1000);
+  $('s-fallback').value = Array.isArray(cfg.fallbackModels) ? cfg.fallbackModels.join('\n') : '';
   $('s-workdir').value = cfg.workdir;
   $('s-permission').value = cfg.permissionMode;
   $('s-mcp').value = JSON.stringify(cfg.mcpServers || {}, null, 2);
@@ -802,6 +804,11 @@ $('save-settings').onclick = async (e) => {
     model: $('s-model').value.trim(),
     baseUrl: $('s-baseurl').value.trim(),
     apiKey: $('s-apikey').value,
+    responseTimeoutMs: Math.min(600, Math.max(10, Number($('s-timeout').value) || 60)) * 1000,
+    fallbackModels: (() => {
+      const list = $('s-fallback').value.split('\n').map((x) => x.trim()).filter(Boolean);
+      return list.length ? list : null;
+    })(),
     workdir: $('s-workdir').value.trim(),
     permissionMode: $('s-permission').value,
     mcpServers,

@@ -592,6 +592,62 @@ async function main() {
     assert.strictEqual(code, 0, `smoke.js вышел с кодом ${code}`);
   });
 
+  /* ------------------------- устойчивость: тайм-аут, повтор ------------------------- */
+
+  const { classify, fallbackModels } = require('../src/core/resilience');
+
+  await check('устойчивость: молчащая → перегруженная (повтор) → рабочая модель отвечает', async () => {
+    const config = {
+      ...loadConfig(), provider: 'openai', baseUrl: llm.url('stream'), apiKey: 'test', workdir: TMP_ROOT, mcpServers: {},
+      model: 'model-silent', fallbackModels: ['model-429', 'model-ok'], responseTimeoutMs: 600, retryDelayMs: 50,
+    };
+    const infos = [];
+    let text = '';
+    const agent = new Agent({ config, session: null, mcp: null, emit: (e) => { if (e.type === 'info') infos.push(e.message); if (e.type === 'assistant_text') text += e.text; } });
+    const before = llm.requests.length;
+    const t0 = Date.now();
+    await agent.send('ответь');
+    const models = llm.requests.slice(before).map((r) => r.model);
+    assert.deepStrictEqual(models, ['model-silent', 'model-429', 'model-429', 'model-ok'], `порядок моделей: ${models}`);
+    assert.strictEqual(text, STREAM_CHUNKS.join(''), 'ответ рабочей модели не пришёл');
+    assert.ok(infos.some((m) => /model-silent: не ответила вовремя — переключаюсь на model-429/.test(m)), infos.join(' | '));
+    assert.ok(infos.some((m) => /model-429: перегружена \(429\) — повтор/.test(m)), infos.join(' | '));
+    assert.ok(infos.some((m) => /запасная модель: model-ok/.test(m)), infos.join(' | '));
+    assert.ok(Date.now() - t0 < 8000, 'слишком долго');
+  });
+
+  await check('устойчивость: все модели не отвечают — понятная ошибка, агент свободен', async () => {
+    const config = { ...loadConfig(), provider: 'openai', baseUrl: llm.url('stream'), apiKey: 'test', workdir: TMP_ROOT, mcpServers: {}, model: 'model-429', fallbackModels: [], retryDelayMs: 20 };
+    const errors = [];
+    const agent = new Agent({ config, session: null, mcp: null, emit: (e) => e.type === 'error' && errors.push(e.message) });
+    await agent.send('ответь');
+    assert.ok(errors.some((m) => /Ни одна модель не ответила/.test(m)), errors.join(' | '));
+    assert.strictEqual(agent.busy, false);
+  });
+
+  await check('устойчивость: «Стоп» во время ожидания — не повтор, а остановка', async () => {
+    const config = { ...loadConfig(), provider: 'openai', baseUrl: llm.url('stream'), apiKey: 'test', workdir: TMP_ROOT, mcpServers: {}, model: 'model-silent', fallbackModels: ['model-ok'], responseTimeoutMs: 5000 };
+    const infos = [];
+    const agent = new Agent({ config, session: null, mcp: null, emit: (e) => e.type === 'info' && infos.push(e.message) });
+    const before = llm.requests.length;
+    const p = agent.send('ответь');
+    await new Promise((r) => setTimeout(r, 300));
+    agent.abort();
+    await p;
+    assert.ok(infos.some((m) => /Остановлено пользователем/.test(m)), infos.join(' | '));
+    assert.deepStrictEqual(llm.requests.slice(before).map((r) => r.model), ['model-silent'], 'после Стоп ушёл запрос к запасной');
+  });
+
+  await check('устойчивость: виды ошибок и запасные модели по умолчанию', () => {
+    assert.strictEqual(classify(new Error('OpenAI-совместимый API 429: slow down')), 'busy');
+    assert.strictEqual(classify(new Error('Anthropic API 529: overloaded')), 'server');
+    assert.strictEqual(classify(new Error('Сеть недоступна: x (ECONNRESET)')), 'network');
+    assert.strictEqual(classify(new Error('OpenAI-совместимый API 401: bad key')), null, '401 повторять бессмысленно');
+    const nv = fallbackModels({ model: 'nvidia/nemotron-3.5-lightning-30b-a3b', baseUrl: 'https://integrate.api.nvidia.com/v1', fallbackModels: null });
+    assert.ok(nv.length >= 2 && !nv.includes('nvidia/nemotron-3.5-lightning-30b-a3b'), nv.join());
+    assert.deepStrictEqual(fallbackModels({ model: 'x', baseUrl: 'https://api.anthropic.com', fallbackModels: null }), []);
+  });
+
   /* ------------------------------ read_pdf (PDF) ------------------------------- */
 
   /** Настоящий маленький PDF: по строке текста на страницу, смещения xref посчитаны. */

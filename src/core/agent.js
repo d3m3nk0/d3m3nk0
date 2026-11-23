@@ -16,6 +16,7 @@
 const fs = require('node:fs');
 const path = require('node:path');
 const { runTurn, estimateMessagesTokens } = require('./providers');
+const { runWithRetry } = require('./resilience');
 const { toolSchemas, runTool } = require('./tools');
 const { prepareForRequest, toolSchemaTokens } = require('./context');
 
@@ -184,25 +185,33 @@ class Agent {
         this.emit({ type: 'turn_start', step });
 
         streamed = '';
-        const result = await runTurn({
+        const result = await runWithRetry({
+          runTurn,
           config: this.config,
-          system: this.system,
-          // В модель — копия с обрезанными старыми результатами; this.messages
-          // и журнал сессии остаются полными.
-          messages: this.requestMessages(),
-          tools: this.toolDefs,
           signal: sig,
-          onText: (delta) => {
-            streamed += delta;
-            this.emit({ type: 'assistant_text', text: delta });
+          onInfo: (message) => this.emit({ type: 'info', message }),
+          opts: {
+            system: this.system,
+            // В модель — копия с обрезанными старыми результатами; this.messages
+            // и журнал сессии остаются полными.
+            messages: this.requestMessages(),
+            tools: this.toolDefs,
+            signal: sig,
+            onText: (delta) => {
+              streamed += delta;
+              this.emit({ type: 'assistant_text', text: delta });
+            },
+            // Модель начала вызов инструмента: имя известно, аргументы ещё идут.
+            onToolStart: (info) => this.emit({ type: 'tool_call_start', ...info }),
+            // Ход рассуждения — только для показа. В messages и журнал сессии не пишется.
+            onReasoning: (delta) => this.emit({ type: 'assistant_reasoning', text: delta }),
+            // Сервер прислал заголовки: ожидание сети кончилось, идёт генерация.
+            onOpen: () => this.emit({ type: 'stream_open', step }),
           },
-          // Модель начала вызов инструмента: имя известно, аргументы ещё идут.
-          onToolStart: (info) => this.emit({ type: 'tool_call_start', ...info }),
-          // Ход рассуждения — только для показа. В messages и журнал сессии не пишется.
-          onReasoning: (delta) => this.emit({ type: 'assistant_reasoning', text: delta }),
-          // Сервер прислал заголовки: ожидание сети кончилось, идёт генерация.
-          onOpen: () => this.emit({ type: 'stream_open', step }),
         });
+        if (result.model !== this.config.model) {
+          this.emit({ type: 'info', message: `Ответила запасная модель: ${result.model}` });
+        }
 
         streamed = ''; // ответ получен целиком и сохраняется ниже
         const assistantMessage = { role: 'assistant', blocks: result.blocks };

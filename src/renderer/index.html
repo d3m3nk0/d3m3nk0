@@ -98,6 +98,13 @@
               <label>API-ключ
                 <input id="s-apikey" type="password" placeholder="ключ хранится в ~/.d3m3nk0/config.json" />
               </label>
+              <label>Ждать первого ответа модели, секунд
+                <input id="s-timeout" type="number" min="10" max="600" step="5" />
+              </label>
+              <label>Запасные модели (по одной в строке; пусто — для NVIDIA быстрые по умолчанию)
+                <textarea id="s-fallback" rows="3" spellcheck="false" placeholder="nvidia/nemotron-3.5-lightning-30b-a3b"></textarea>
+              </label>
+              <p class="pane-note">Если модель молчит дольше заданного или отвечает «перегружено», агент повторит запрос, а потом попробует запасную модель.</p>
             </section>
 
             <section data-pane="work" hidden>
