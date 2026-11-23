@@ -592,6 +592,67 @@ async function main() {
     assert.strictEqual(code, 0, `smoke.js вышел с кодом ${code}`);
   });
 
+  /* ------------------------------ read_pdf (PDF) ------------------------------- */
+
+  /** Настоящий маленький PDF: по строке текста на страницу, смещения xref посчитаны. */
+  function makePdf(lines) {
+    const objs = [];
+    const add = (s) => objs.push(s) && objs.length;
+    const catalog = add('<< /Type /Catalog /Pages 2 0 R >>');
+    add('PAGES');
+    const font = add('<< /Type /Font /Subtype /Type1 /BaseFont /Helvetica >>');
+    const kids = [];
+    for (const line of lines) {
+      const stream = `BT /F1 14 Tf 72 720 Td (${line}) Tj ET`;
+      const content = add(`<< /Length ${stream.length} >>\nstream\n${stream}\nendstream`);
+      kids.push(add(`<< /Type /Page /Parent 2 0 R /MediaBox [0 0 612 792] /Resources << /Font << /F1 ${font} 0 R >> >> /Contents ${content} 0 R >>`));
+    }
+    objs[1] = `<< /Type /Pages /Kids [${kids.map((k) => `${k} 0 R`).join(' ')}] /Count ${kids.length} >>`;
+    let out = '%PDF-1.4\n';
+    const offsets = [];
+    objs.forEach((o, i) => {
+      offsets.push(Buffer.byteLength(out, 'latin1'));
+      out += `${i + 1} 0 obj\n${o}\nendobj\n`;
+    });
+    const xref = Buffer.byteLength(out, 'latin1');
+    out += `xref\n0 ${objs.length + 1}\n0000000000 65535 f \n${offsets.map((o) => `${String(o).padStart(10, '0')} 00000 n \n`).join('')}`;
+    out += `trailer\n<< /Size ${objs.length + 1} /Root ${catalog} 0 R >>\nstartxref\n${xref}\n%%EOF\n`;
+    return Buffer.from(out, 'latin1');
+  }
+
+  const { parsePages: pp, runTool: rt } = require('../src/core/tools');
+  const pdfDir = path.join(TMP_ROOT, 'pdfs');
+  fs.mkdirSync(pdfDir, { recursive: true });
+  fs.writeFileSync(path.join(pdfDir, 'cours.pdf'), makePdf(Array.from({ length: 12 }, (_, i) => `Bonjour RDM page ${i + 1}`)));
+  const pdfCtx = { workdir: pdfDir, allowOutside: false };
+
+  await check('read_pdf: выбранные страницы, подписи, подсказка «дальше»', async () => {
+    const out = await rt('read_pdf', { path: 'cours.pdf', pages: '2, 4-5' }, pdfCtx);
+    assert.ok(/12 стр\. Показаны страницы 2, 4–5/.test(out), out.slice(0, 120));
+    for (const n of [2, 4, 5]) assert.ok(out.includes(`--- страница ${n} ---\nBonjour RDM page ${n}`), `нет страницы ${n}`);
+    assert.ok(!out.includes('page 3'), 'лишняя страница 3');
+    assert.ok(/pages "6-12"/.test(out), 'нет подсказки, как читать дальше');
+  });
+
+  await check('read_pdf: без pages — первые 10 страниц', async () => {
+    const out = await rt('read_pdf', { path: 'cours.pdf' }, pdfCtx);
+    assert.ok(out.includes('page 10') && !out.includes('page 11'), 'не первые 10 страниц');
+    assert.ok(/pages "11-12"/.test(out));
+  });
+
+  await check('read_pdf: неверные страницы, не-PDF и путь вне папки отвергаются', async () => {
+    assert.deepStrictEqual(pp('3, 1-2, 2', 12), [1, 2, 3]);
+    assert.throws(() => pp('0', 12), /вне документа/);
+    assert.throws(() => pp('15', 12), /вне документа/);
+    assert.deepStrictEqual(pp('1-3', 1), [1], 'диапазон за концом документа не обрезан');
+    assert.deepStrictEqual(pp('11-40', 12), [11, 12]);
+    assert.throws(() => pp('1-25', 30), /не больше/);
+    assert.throws(() => pp('пять', 12), /Не понял/);
+    fs.writeFileSync(path.join(pdfDir, 'a.txt'), 'x');
+    await assert.rejects(() => rt('read_pdf', { path: 'a.txt' }, pdfCtx), /не PDF/);
+    await assert.rejects(() => rt('read_pdf', { path: path.join(TMP_ROOT, 'x.pdf') }, pdfCtx), /вне рабочей папки/);
+  });
+
   /* --------------------------- view_image (картинки) --------------------------- */
 
   const { runTool } = require('../src/core/tools');

@@ -20,7 +20,7 @@ const { toolSchemas, runTool } = require('./tools');
 const { prepareForRequest, toolSchemaTokens } = require('./context');
 
 const MAX_STEPS = 40;
-const READ_ONLY_TOOLS = new Set(['read_file', 'list_dir', 'glob_search', 'grep_search', 'view_image']);
+const READ_ONLY_TOOLS = new Set(['read_file', 'list_dir', 'glob_search', 'grep_search', 'view_image', 'read_pdf']);
 
 const RULES_FILE = 'AGENTS.md';
 const RULES_MAX_CHARS = 8000; // ~2000 токенов: правила уходят в каждый запрос

@@ -25,6 +25,45 @@ const IMAGE_MAX_SEND = 4.5 * 1048576;
 const IMAGE_SHRINK_BYTES = 1.5 * 1048576;
 const IMAGE_MAX_SIDE = 1600;
 
+// read_pdf: за один вызов не больше PDF_MAX_PAGES страниц, без pages — первые
+// PDF_DEFAULT_PAGES. Курс RDM — по 30–60 страниц: целиком он съел бы лимит.
+const PDF_MAX_PAGES = 20;
+const PDF_DEFAULT_PAGES = 10;
+
+/**
+ * Разобрать «1-5, 8, 10-12» в список номеров страниц (по порядку, без повторов).
+ * Ошибка — если номер вне 1..total или страниц больше PDF_MAX_PAGES.
+ */
+function parsePages(spec, total) {
+  if (spec == null || String(spec).trim() === '') {
+    return Array.from({ length: Math.min(total, PDF_DEFAULT_PAGES) }, (_, i) => i + 1);
+  }
+  const set = new Set();
+  for (const part of String(spec).split(',')) {
+    const m = part.trim().match(/^(\d+)\s*(?:[-–]\s*(\d+))?$/);
+    if (!m) throw new Error(`Не понял страницы «${part.trim()}». Пример: "1-5, 8"`);
+    const a = Number(m[1]);
+    // «1-3» у PDF из одной страницы — не ошибка: отдаём то, что есть.
+    const b = Math.min(m[2] ? Number(m[2]) : a, total);
+    if (a < 1 || a > total || a > b) throw new Error(`Страница ${a} вне документа (в нём ${total} стр.)`);
+    for (let n = a; n <= b; n++) set.add(n);
+    if (set.size > PDF_MAX_PAGES) throw new Error(`За раз можно не больше ${PDF_MAX_PAGES} страниц — разбейте на части`);
+  }
+  return [...set].sort((x, y) => x - y);
+}
+
+/** «1, 2, 3, 5» → «1–3, 5» для подписи. */
+function pagesLabel(list) {
+  const out = [];
+  for (let i = 0; i < list.length; i++) {
+    let j = i;
+    while (j + 1 < list.length && list[j + 1] === list[j] + 1) j++;
+    out.push(i === j ? `${list[i]}` : `${list[i]}–${list[j]}`);
+    i = j;
+  }
+  return out.join(', ');
+}
+
 function truncate(text, max = MAX_OUTPUT) {
   if (text.length <= max) return text;
   const head = text.slice(0, max);
@@ -317,6 +356,52 @@ const tools = [
   },
 
   {
+    name: 'read_pdf',
+    description:
+      'Прочитать текст из PDF в рабочей папке (курсы, задачи, формуляры). Читай частями: ' +
+      `pages — например "1-5, 8" (за раз до ${PDF_MAX_PAGES} страниц; без pages — первые ${PDF_DEFAULT_PAGES}). ` +
+      'Рисунки и сканы так не читаются — для них сохрани страницу картинкой и используй view_image.',
+    input_schema: {
+      type: 'object',
+      properties: {
+        path: { type: 'string', description: 'Путь к PDF (относительно рабочей папки)' },
+        pages: { type: 'string', description: 'Страницы: "3", "1-5", "1-5, 8, 10-12"' },
+      },
+      required: ['path'],
+    },
+    async run(input, ctx) {
+      const abs = resolvePath(input, ctx);
+      if (path.extname(abs).toLowerCase() !== '.pdf') throw new Error(`Это не PDF: ${path.basename(abs)}`);
+      const data = new Uint8Array(await fsp.readFile(abs));
+      const pdfjs = await import('pdfjs-dist/legacy/build/pdf.mjs');
+      const task = pdfjs.getDocument({ data, isEvalSupported: false, useSystemFonts: true, verbosity: 0 });
+      try {
+        const doc = await task.promise;
+        const total = doc.numPages;
+        const list = parsePages(input.pages, total);
+        const rel = path.relative(ctx.workdir, abs) || path.basename(abs);
+        const parts = [`PDF ${rel}: ${total} стр. Показаны страницы ${pagesLabel(list)}.`];
+        for (const n of list) {
+          if (ctx.signal?.aborted) throw new Error('прервано');
+          const content = await (await doc.getPage(n)).getTextContent();
+          let text = '';
+          for (const it of content.items) text += (it.str || '') + (it.hasEOL ? '\n' : ' ');
+          text = text.replace(/[ \t]+/g, ' ').replace(/ *\n */g, '\n').replace(/\n{3,}/g, '\n\n').trim();
+          parts.push(`--- страница ${n} ---\n${text || '(текста нет — скан или рисунок; используй view_image)'}`);
+        }
+        const last = list[list.length - 1];
+        if (last < total) {
+          const next = `${last + 1}-${Math.min(total, last + PDF_DEFAULT_PAGES)}`;
+          parts.push(`[Дальше есть ещё страницы. Продолжить: read_pdf с pages "${next}"]`);
+        }
+        return truncate(parts.join('\n\n'));
+      } finally {
+        await task.destroy().catch(() => {});
+      }
+    },
+  },
+
+  {
     name: 'view_image',
     description:
       'Посмотреть картинку из рабочей папки (png, jpg, jpeg, gif, webp): модель увидит её содержимое. ' +
@@ -380,4 +465,4 @@ async function runTool(name, input, ctx, extra = []) {
   return await tool.run(input, ctx);
 }
 
-module.exports = { tools, toolSchemas, runTool, resolvePath, truncate, MAX_OUTPUT, IMAGE_MAX_SEND, IMAGE_MAX_SIDE };
+module.exports = { tools, toolSchemas, runTool, resolvePath, truncate, parsePages, MAX_OUTPUT, IMAGE_MAX_SEND, IMAGE_MAX_SIDE, PDF_MAX_PAGES };
