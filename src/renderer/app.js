@@ -482,9 +482,88 @@ function setBusy(value) {
   if (!value) input.focus();
 }
 
+/* -------------------------------- вложения -------------------------------- */
+
+// Скриншот (Ctrl+V) или файл, перетащенный в окно, — в рабочую папку агента
+// (подпапка «Вложения»). Над полем ввода — «чипы» с превью; при отправке
+// к сообщению дописывается список вложений с подсказкой, чем их открыть.
+const attachBox = $('attachments');
+let pending = [];
+
+function renderAttachments() {
+  attachBox.replaceChildren();
+  attachBox.hidden = !pending.length;
+  pending.forEach((a, i) => {
+    const chip = el('div', 'chip');
+    chip.title = a.rel;
+    if (a.thumb) {
+      const img = el('img');
+      img.src = a.thumb;
+      img.alt = '';
+      chip.append(img);
+    } else {
+      chip.append(el('span', 'chip-icon', a.kind === 'pdf' ? 'PDF' : '📄'));
+    }
+    chip.append(el('span', 'chip-name', a.name.replace(/^\d{8}-\d{6}-/, '')));
+    const x = el('button', 'ghost icon-btn', '✕');
+    x.type = 'button';
+    x.setAttribute('aria-label', `Убрать вложение ${a.name}`);
+    x.onclick = () => {
+      pending.splice(i, 1);
+      renderAttachments();
+    };
+    chip.append(x);
+    attachBox.append(chip);
+  });
+}
+
+async function addAttachment(promise) {
+  const res = await promise;
+  if (!res.ok) return addError(`Вложение не добавлено: ${res.error}`);
+  pending.push(res);
+  renderAttachments();
+}
+
+input.addEventListener('paste', (e) => {
+  const files = [...(e.clipboardData?.items || [])].filter((it) => it.kind === 'file').map((it) => it.getAsFile()).filter(Boolean);
+  if (!files.length) return; // обычный текст вставляется как обычно
+  e.preventDefault();
+  for (const f of files) {
+    const p = window.d3.pathForFile(f);
+    if (p) addAttachment(window.d3.attachFile(p));
+    else {
+      const ext = (f.type.split('/')[1] || 'png').replace('jpeg', 'jpg');
+      f.arrayBuffer().then((buf) => addAttachment(window.d3.attachBytes(f.name && f.name !== 'image.png' ? f.name : `скриншот.${ext}`, new Uint8Array(buf))));
+    }
+  }
+});
+
+// Файл, брошенный в окно, Electron иначе открыл бы вместо приложения.
+document.addEventListener('dragover', (e) => {
+  e.preventDefault();
+  document.body.classList.toggle('dropping', [...(e.dataTransfer?.types || [])].includes('Files'));
+});
+document.addEventListener('dragleave', (e) => {
+  if (!e.relatedTarget) document.body.classList.remove('dropping');
+});
+document.addEventListener('drop', (e) => {
+  e.preventDefault();
+  document.body.classList.remove('dropping');
+  for (const f of e.dataTransfer?.files || []) {
+    const p = window.d3.pathForFile(f);
+    if (p) addAttachment(window.d3.attachFile(p));
+  }
+  input.focus();
+});
+
 async function send() {
-  const text = input.value.trim();
-  if (!text || busy) return;
+  const typed = input.value.trim();
+  if ((!typed && !pending.length) || busy) return;
+  // Подсказку по каждому вложению присылает окно из ядра (attach:bytes/attach:file),
+  // поэтому текст для модели собирается здесь из готовых строк, без своей таблицы.
+  const text = (typed || 'Посмотри вложения.') + (pending.length ? `\n\nВложения:\n${pending.map((a) => `- ${a.rel} (${a.note || 'файл — read_file'})`).join('\n')}` : '');
+  pending = [];
+  renderAttachments();
   input.value = '';
   addUser(text);
   setBusy(true);

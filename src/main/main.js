@@ -16,6 +16,7 @@ const { Session } = require('../core/session');
 const { McpManager, describePlugins } = require('../core/mcp');
 const { Agent } = require('../core/agent');
 const { NVIDIA_FAST_MODELS } = require('../core/resilience');
+const attachments = require('../core/attachments');
 
 // Режим скриншота: GPU-композитинг в удалённой сессии не отдаёт кадр
 // (capturePage падает с UnknownVizError), поэтому рисуем программно.
@@ -333,6 +334,38 @@ ipcMain.handle('usage:get', () => ({
   model: config.model,
   provider: providerLabel(config),
 }));
+
+// Вложения: вставленный скриншот (байты) или перетащенный файл (путь) → в рабочую папку.
+// Для картинок — маленькое превью (data URL) для «чипа» над полем ввода,
+// и подсказка noteFor() — одна и та же, что в тексте сообщения для модели.
+function withThumb(info) {
+  const out = { ...info, note: attachments.noteFor(info.kind) };
+  if (info.kind !== 'image') return out;
+  try {
+    const img = nativeImage.createFromPath(info.abs);
+    if (!img.isEmpty()) return { ...out, thumb: img.resize({ height: 64, quality: 'good' }).toDataURL() };
+  } catch {
+    // без превью — не страшно
+  }
+  return out;
+}
+
+ipcMain.handle('attach:bytes', async (_e, { name, data }) => {
+  try {
+    return { ok: true, ...withThumb(await attachments.saveBytes({ workdir: config.workdir, name, data })) };
+  } catch (e) {
+    return { ok: false, error: e.message };
+  }
+});
+
+ipcMain.handle('attach:file', async (_e, src) => {
+  try {
+    if (typeof src !== 'string' || !path.isAbsolute(src)) throw new Error('нет пути к файлу');
+    return { ok: true, ...withThumb(await attachments.attachFile({ workdir: config.workdir, src })) };
+  } catch (e) {
+    return { ok: false, error: e.message };
+  }
+});
 
 // Открыть в проводнике только известные места: окно не передаёт сюда путь.
 ipcMain.handle('shell:openPlace', async (_e, place) => {

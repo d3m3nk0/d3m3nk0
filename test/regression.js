@@ -742,6 +742,40 @@ async function main() {
     assert.ok(/3 неудачных/.test(g.check([call(6, 'f')], [res(6, 'exit code: 2')]) || ''), 'не сработало на 3 подряд');
   });
 
+  /* ------------------------------ вложения ------------------------------ */
+
+  const att = require('../src/core/attachments');
+
+  await check('вложения: скриншот сохраняется во «Вложения» с датой, имена без запрещённых символов', async () => {
+    const wd = fs.mkdtempSync(path.join(TMP_ROOT, 'att-'));
+    const a = await att.saveBytes({ workdir: wd, name: 'скрин:1?.png', data: new Uint8Array([1, 2, 3]) });
+    assert.ok(/^Вложения[\\/]\d{8}-\d{6}-скрин_1_\.png$/.test(a.rel), a.rel);
+    assert.strictEqual(a.kind, 'image');
+    assert.deepStrictEqual([...fs.readFileSync(a.abs)], [1, 2, 3]);
+    const b = await att.saveBytes({ workdir: wd, name: 'скрин:1?.png', data: new Uint8Array([4]) });
+    assert.notStrictEqual(a.rel, b.rel, 'второе вложение затёрло первое');
+    await assert.rejects(() => att.saveBytes({ workdir: wd, name: 'x.png', data: new Uint8Array(0) }), /Пустое/);
+    assert.ok(!att.safeName('..\\..\\evil.png').includes('..\\'), 'путь из имени не вычищен');
+  });
+
+  await check('вложения: файл снаружи копируется, из рабочей папки — как есть; подсказка по типу', async () => {
+    const wd = fs.mkdtempSync(path.join(TMP_ROOT, 'att2-'));
+    const outside = path.join(TMP_ROOT, 'cours.pdf');
+    fs.writeFileSync(outside, '%PDF-1.4');
+    const a = await att.attachFile({ workdir: wd, src: outside });
+    assert.ok(a.rel.startsWith(`Вложения${path.sep}`) && a.kind === 'pdf', a.rel);
+    assert.ok(fs.existsSync(outside), 'оригинал пропал');
+    const inside = path.join(wd, 'схема.png');
+    fs.writeFileSync(inside, 'x');
+    const b = await att.attachFile({ workdir: wd, src: inside });
+    assert.strictEqual(b.rel, 'схема.png', 'файл из рабочей папки скопирован');
+    const note = att.attachmentNote([a, b]);
+    assert.ok(/read_pdf/.test(note) && /view_image/.test(note), note);
+    // Окно показывает ту же подсказку, что уходит модели: одна таблица на ядро и UI.
+    assert.strictEqual(att.noteFor('image'), 'картинка — открой через view_image');
+    assert.strictEqual(att.noteFor('неизвестно'), 'файл — read_file');
+  });
+
   /* ------------------------------ read_pdf (PDF) ------------------------------- */
 
   /** Настоящий маленький PDF: по строке текста на страницу, смещения xref посчитаны. */

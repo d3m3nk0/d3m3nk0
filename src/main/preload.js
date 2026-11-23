@@ -1,6 +1,6 @@
 'use strict';
 
-const { contextBridge, ipcRenderer } = require('electron');
+const { contextBridge, ipcRenderer, webUtils } = require('electron');
 
 contextBridge.exposeInMainWorld('d3', {
   getConfig: () => ipcRenderer.invoke('config:get'),
@@ -14,6 +14,10 @@ contextBridge.exposeInMainWorld('d3', {
   appInfo: () => ipcRenderer.invoke('app:info'),
   usage: () => ipcRenderer.invoke('usage:get'),
   openPlace: (place) => ipcRenderer.invoke('shell:openPlace', place),
+  attachBytes: (name, data) => ipcRenderer.invoke('attach:bytes', { name, data }),
+  attachFile: (src) => ipcRenderer.invoke('attach:file', src),
+  // Путь перетащенного файла (в Electron 32+ File.path больше нет).
+  pathForFile: (file) => webUtils.getPathForFile(file),
   send: (text) => ipcRenderer.invoke('agent:send', text),
   abort: () => ipcRenderer.invoke('agent:abort'),
   mcpStatus: () => ipcRenderer.invoke('mcp:status'),
