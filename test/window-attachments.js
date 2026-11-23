@@ -410,6 +410,56 @@ async function main() {
       }
     });
 
+    // Переименование сессии в списке. Пункт «Переименовать…» — в нативном меню
+    // правого клика, CDP его не нажмёт; поле открываем той же startRename(), что и меню.
+    await check('переименование в списке: Enter сохраняет в журнал, пустое — нельзя, Esc — отмена', async () => {
+      const sessionsDir = path.join(HOME, 'sessions');
+      const open = async () =>
+        evaluate(`(async () => {
+          const list = await window.d3.listSessions();
+          const s = list[0];
+          const btn = document.querySelector('#sessions .session[data-id="' + s.id + '"]');
+          startRename(btn, s);
+          return { id: s.id, field: !!document.querySelector('#sessions .session-rename'), focused: document.activeElement?.className };
+        })()`);
+      const key = (k, value) =>
+        evaluate(`(() => {
+          const f = document.querySelector('#sessions .session-rename');
+          if (${JSON.stringify(value)} !== null) f.value = ${JSON.stringify(value)};
+          f.dispatchEvent(new KeyboardEvent('keydown', { key: ${JSON.stringify(k)}, bubbles: true }));
+        })()`);
+
+      // 1) Ввести имя и Enter.
+      const first = await open();
+      assert.ok(first.field && first.focused === 'session-rename', `поле не открылось: ${JSON.stringify(first)}`);
+      await key('Enter', 'Окно: моё имя');
+      await sleep(500);
+      const after = await evaluate(`(() => {
+        const b = document.querySelector('#sessions .session[data-id="${first.id}"]');
+        return { label: b ? b.textContent : null, tip: b ? b.title : '', field: !!document.querySelector('#sessions .session-rename') };
+      })()`);
+      assert.strictEqual(after.label, 'Окно: моё имя', `в списке: ${after.label}`);
+      assert.ok(!after.field, 'поле не закрылось');
+      assert.ok(after.tip.includes(first.id), 'при наведении нет id');
+      const journal = fs.readFileSync(path.join(sessionsDir, `${first.id}.jsonl`), 'utf8');
+      assert.ok(journal.includes('"name":"Окно: моё имя","source":"manual"'), 'имя не записано в журнал');
+
+      // 2) Пустое имя: поле остаётся и подсвечено, журнал не меняется; Esc — отмена.
+      await open();
+      await key('Enter', '   ');
+      await sleep(300);
+      const empty = await evaluate(`(() => {
+        const f = document.querySelector('#sessions .session-rename');
+        return { field: !!f, invalid: f ? f.classList.contains('invalid') : false };
+      })()`);
+      assert.ok(empty.field && empty.invalid, `пустое имя: ${JSON.stringify(empty)}`);
+      await key('Escape', null);
+      await sleep(400);
+      const label = await evaluate(`document.querySelector('#sessions .session[data-id="${first.id}"]')?.textContent`);
+      assert.strictEqual(label, 'Окно: моё имя', 'после Esc имя изменилось');
+      assert.strictEqual(fs.readFileSync(path.join(sessionsDir, `${first.id}.jsonl`), 'utf8'), journal, 'журнал изменился от пустого имени или Esc');
+    });
+
     await check('в консоли окна нет ошибок (CSP, обработчики)', async () => {
       const errors = cdp.events
         .filter((e) => e.method === 'Runtime.exceptionThrown' || (e.method === 'Log.entryAdded' && e.params.entry.level === 'error'))

@@ -415,13 +415,32 @@ function popupMenu(items) {
 }
 
 // Правый клик по сессии в списке: закрепить / открепить / удалить.
+// Ручное имя сессии: запись meta с source: 'manual' (Session.rename). Пустое — отказ.
+ipcMain.handle('session:rename', (_e, { id, name }) => {
+  try {
+    const saved = Session.rename(id, name);
+    // Открытая сессия: её объект тоже знает новое имя и авто-имя уже не пишет.
+    if (id === session.id) {
+      session.meta = { name: saved };
+      session.named = true;
+    }
+    return { ok: true, name: saved };
+  } catch (e) {
+    return { ok: false, error: e.message || String(e) };
+  }
+});
+
 ipcMain.handle('session:menu', async (_e, { id, pinned }) => {
   const choice = await popupMenu([
+    ['Переименовать…', 'rename'],
     [pinned ? 'Открепить' : 'Закрепить', pinned ? 'unpin' : 'pin'],
     ['-'],
     ['Удалить…', 'delete'],
   ]);
   if (!choice) return { action: null };
+
+  // Имя вводится прямо в списке (окно), сохраняет его session:rename.
+  if (choice === 'rename') return { action: 'rename' };
 
   if (choice === 'pin' || choice === 'unpin') {
     Session.setPinned(id, choice === 'pin');

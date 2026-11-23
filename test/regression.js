@@ -488,6 +488,84 @@ async function main() {
     assert.strictEqual(Session.list().find((x) => x.id === session.id).name, 'kak_poschitat_moment_inertsii_truby');
   });
 
+  /* ------------------ переименование сессии (Пункт 8, часть 2) ------------------ */
+
+  const metaLines = (file) => fs.readFileSync(file, 'utf8').split('\n').filter((l) => l.includes('"kind":"meta"'));
+
+  await check('переименование: пишет meta.name (source manual), list и load видят новое имя', () => {
+    const s = new Session();
+    s.append(userEntry('Как посчитать прогиб консоли'));
+    assert.strictEqual(Session.rename(s.id, 'Прогиб консоли, задача 3'), 'Прогиб консоли, задача 3');
+    assert.strictEqual(Session.load(s.id).meta.name, 'Прогиб консоли, задача 3');
+    assert.strictEqual(Session.list().find((x) => x.id === s.id).name, 'Прогиб консоли, задача 3');
+    const last = JSON.parse(metaLines(s.file).at(-1)).entry.meta;
+    assert.deepStrictEqual(last, { name: 'Прогиб консоли, задача 3', source: 'manual' });
+    assert.strictEqual(Session.load(s.id).messages.length, 1, 'meta попала в сообщения');
+  });
+
+  await check('переименование: повторное перезаписывает, лишние пробелы и переносы убраны', () => {
+    const s = new Session();
+    s.append(userEntry('Первое сообщение для проверки'));
+    Session.rename(s.id, 'Первое имя');
+    Session.rename(s.id, '  Второе \n\t имя  ');
+    assert.strictEqual(Session.load(s.id).meta.name, 'Второе имя');
+    assert.strictEqual(Session.list().find((x) => x.id === s.id).name, 'Второе имя');
+    assert.ok(Session.rename(s.id, 'я'.repeat(200)).length <= 80, 'имя длиннее 80');
+  });
+
+  await check('переименование: авто-имя не возвращается — ни новые сообщения, ни повторное открытие', () => {
+    const s = new Session();
+    s.append(userEntry('Авто имя из первого сообщения'));
+    assert.strictEqual(s.meta.name, 'avto_imya_iz_pervogo_soobshcheniya');
+    Session.rename(s.id, 'Моё имя');
+    s.append(userEntry('Ещё сообщение после переименования'));
+    const again = new Session(s.id);
+    again.append(userEntry('Сообщение после перезапуска'));
+    assert.strictEqual(Session.load(s.id).meta.name, 'Моё имя');
+    assert.strictEqual(Session.list().find((x) => x.id === s.id).name, 'Моё имя');
+    assert.strictEqual(metaLines(s.file).length, 2, 'после ручного имени дописалась ещё meta');
+  });
+
+  await check('переименование: пустое имя не сохраняется, журнал не меняется; чужой id — отказ', () => {
+    const s = new Session();
+    s.append(userEntry('Сессия для пустого имени'));
+    const before = fs.readFileSync(s.file, 'utf8');
+    for (const bad of ['', '   ', '\n\t', null, undefined]) {
+      assert.throws(() => Session.rename(s.id, bad), /не может быть пустым/, `принято пустое: ${JSON.stringify(bad)}`);
+    }
+    assert.strictEqual(fs.readFileSync(s.file, 'utf8'), before, 'журнал изменился');
+    assert.strictEqual(Session.load(s.id).meta.name, 'sessiya_dlya_pustogo_imeni');
+    assert.throws(() => Session.rename('нет-такой-сессии', 'x'), /Недопустимый id|не найдена/);
+    assert.throws(() => Session.rename('20990101-000000-none', 'x'), /не найдена/);
+  });
+
+  await check('переименование: старая сессия без meta — запись появляется только сейчас', () => {
+    const id = `old-rename-${Date.now()}`;
+    fs.writeFileSync(Session.fileOf(id), `${JSON.stringify({ ts: 1, entry: userEntry('Старая сессия про сдвиг') })}\n`);
+    Session.list();
+    assert.strictEqual(metaLines(Session.fileOf(id)).length, 0, 'list записал meta');
+    Session.rename(id, 'Сдвиг, старая');
+    assert.strictEqual(metaLines(Session.fileOf(id)).length, 1, 'записей meta не одна');
+    assert.strictEqual(Session.list().find((x) => x.id === id).name, 'Сдвиг, старая');
+    const s = new Session(id);
+    s.append(userEntry('Новое сообщение в старой сессии'));
+    assert.strictEqual(Session.load(id).meta.name, 'Сдвиг, старая', 'авто-имя перезаписало ручное');
+  });
+
+  await check('переименование: сквозной через агента — имя держится после новых сообщений', async () => {
+    const config = { ...loadConfig(), provider: 'openai', baseUrl: llm.url('stream'), apiKey: 'test', workdir: TMP_ROOT, mcpServers: {} };
+    const session = new Session();
+    const agent = new Agent({ config, session, mcp: null });
+    await agent.send('Расчёт вала на кручение');
+    assert.strictEqual(Session.load(session.id).meta.name, 'raschet_vala_na_kruchenie');
+    Session.rename(session.id, 'Вал ABC — кручение');
+    await agent.send('Продолжим: угол закручивания');
+    await agent.send('И ещё про жёсткость');
+    assert.strictEqual(Session.load(session.id).meta.name, 'Вал ABC — кручение');
+    assert.strictEqual(Session.list().find((x) => x.id === session.id).name, 'Вал ABC — кручение');
+    assert.ok(Session.load(session.id).messages.every((m) => m && m.role), 'meta среди сообщений');
+  });
+
   // Сессии в HOME теста (D3M3NK0_HOME выставлен до загрузки ядра).
   const mkSession = (text) => {
     const s = new Session();

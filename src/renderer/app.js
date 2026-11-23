@@ -374,6 +374,51 @@ async function refreshConfig() {
   $('s-mcp').value = JSON.stringify(cfg.mcpServers || {}, null, 2);
 }
 
+/**
+ * Переименование прямо в списке: кнопка сессии меняется на поле ввода.
+ * Enter или уход фокуса — сохранить, Esc — отмена. Пустое имя не сохраняется:
+ * по Enter — подсказка и поле остаётся, по уходу фокуса — отмена.
+ */
+function startRename(btn, s) {
+  const field = el('input', 'session-rename');
+  field.value = s.name || s.title || '';
+  field.maxLength = 80;
+  field.setAttribute('aria-label', 'Новое имя сессии');
+  field.title = 'Enter — сохранить, Esc — отмена';
+  btn.replaceWith(field);
+  field.focus();
+  field.select();
+
+  let done = false;
+  const finish = async (save) => {
+    if (done) return;
+    if (save && !field.value.trim()) {
+      field.classList.add('invalid');
+      field.placeholder = 'Имя не может быть пустым';
+      field.value = '';
+      return false;
+    }
+    done = true;
+    if (save) {
+      const res = await window.d3.renameSession(s.id, field.value);
+      if (!res.ok) addError(`Не переименовано: ${res.error}`);
+    }
+    refreshSessions();
+    return true;
+  };
+  field.addEventListener('keydown', (e) => {
+    if (e.key === 'Enter') {
+      e.preventDefault();
+      finish(true);
+    } else if (e.key === 'Escape') {
+      e.preventDefault();
+      finish(false);
+    }
+  });
+  field.addEventListener('input', () => field.classList.remove('invalid'));
+  field.addEventListener('blur', () => finish(field.value.trim() ? true : false));
+}
+
 async function refreshSessions() {
   const list = await window.d3.listSessions();
   const box = $('sessions');
@@ -381,7 +426,8 @@ async function refreshSessions() {
   for (const s of list) {
     // Короткое имя (session-name.js) — в списке; начало сообщения и id — при наведении.
     const btn = el('button', 'session', s.name || s.title || s.id);
-    btn.title = `${s.title ? `${s.title}\n` : ''}${s.id}\nПравый клик — закрепить или удалить`;
+    btn.title = `${s.title ? `${s.title}\n` : ''}${s.id}\nПравый клик — переименовать, закрепить или удалить`;
+    btn.dataset.id = s.id;
     if (s.pinned) btn.classList.add('pinned');
     if (s.current) btn.classList.add('active');
     btn.onclick = async () => {
@@ -396,6 +442,10 @@ async function refreshSessions() {
       const res = await window.d3.sessionMenu(s.id, s.pinned);
       if (res.error) addError(res.error);
       if (!res.action) return;
+      if (res.action === 'rename') {
+        startRename(btn, s);
+        return;
+      }
       if (res.action === 'delete') {
         if (res.wasCurrent) {
           renderHistory([]);

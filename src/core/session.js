@@ -7,10 +7,13 @@
  * Внутри entry — канонические сообщения агента, чтобы историю можно было
  * восстановить и продолжить разговор.
  *
- * Имя сессии: entry { kind: 'meta', meta: { name } } — пишется ОДИН раз, по
- * первому сообщению пользователя (session-name.js, без модели). Действует первая
- * такая запись; последующие сообщения имя не меняют. Старый код запись meta
- * просто пропускает: load() берёт только kind: 'message'.
+ * Имя сессии — записи kind: 'meta' (сообщениями НЕ считаются: load() берёт
+ * только kind: 'message', старый код meta просто пропускает):
+ *  - авто-имя { kind: 'meta', meta: { name } } — ОДИН раз, по первому сообщению
+ *    пользователя (session-name.js, без модели); действует первая такая запись;
+ *  - ручное { kind: 'meta', meta: { name, source: 'manual' } } — Session.rename();
+ *    действует ПОСЛЕДНЯЯ ручная запись, и она всегда важнее авто-имени.
+ * Авто-имя после любой записи meta больше не пишется — ручное не затирается.
  */
 
 const fs = require('node:fs');
@@ -30,7 +33,36 @@ function textOf(message) {
     .join(' ');
 }
 
-/** Из журнала: сохранённое имя (первая запись meta) и текст первого сообщения пользователя. */
+const MANUAL_NAME_MAX = 80;
+
+/**
+ * Действующее имя по записям meta в порядке журнала: последняя ручная, иначе
+ * первое авто-имя, иначе null.
+ */
+function pickName(metas) {
+  let auto = null;
+  let manual = null;
+  for (const m of metas) {
+    if (typeof m?.name !== 'string' || !m.name) continue;
+    if (m.source === 'manual') manual = m.name;
+    else if (auto == null) auto = m.name;
+  }
+  return manual ?? auto;
+}
+
+/** Ручное имя как ввёл пользователь: без переносов и управляющих символов, до 80 знаков. */
+function cleanManualName(raw) {
+  const name = String(raw ?? '')
+    .replace(/[\u0000-\u001f\u007f]+/g, ' ')
+    .replace(/\s+/g, ' ')
+    .trim()
+    .slice(0, MANUAL_NAME_MAX)
+    .trim();
+  if (!name) throw new Error('Имя сессии не может быть пустым');
+  return name;
+}
+
+/** Из журнала: действующее имя (pickName) и текст первого сообщения пользователя. */
 function scanJournal(file) {
   const out = { name: null, firstText: null };
   let raw = '';
@@ -39,6 +71,7 @@ function scanJournal(file) {
   } catch {
     return out;
   }
+  const metas = [];
   for (const line of raw.split('\n')) {
     if (!line.trim()) continue;
     let entry;
@@ -47,10 +80,10 @@ function scanJournal(file) {
     } catch {
       continue; // битая строка не должна ломать чтение
     }
-    if (entry?.kind === 'meta' && out.name == null && typeof entry.meta?.name === 'string') out.name = entry.meta.name;
+    if (entry?.kind === 'meta') metas.push(entry.meta);
     else if (out.firstText == null && isUserText(entry)) out.firstText = textOf(entry.message);
-    if (out.name != null && out.firstText != null) break;
   }
+  out.name = pickName(metas);
   return out;
 }
 
@@ -135,8 +168,22 @@ class Session {
       }
     }
     const messages = entries.filter((e) => e.entry && e.entry.kind === 'message').map((e) => e.entry.message);
-    const metaEntry = entries.find((e) => e.entry?.kind === 'meta' && typeof e.entry.meta?.name === 'string');
-    return { id, messages, entries, meta: { name: metaEntry ? metaEntry.entry.meta.name : null } };
+    const name = pickName(entries.filter((e) => e.entry?.kind === 'meta').map((e) => e.entry.meta));
+    return { id, messages, entries, meta: { name } };
+  }
+
+  /**
+   * Переименовать сессию вручную: запись { kind: 'meta', meta: { name, source: 'manual' } }.
+   * Перезаписывает авто-имя и прошлое ручное; авто-имя после этого не пишется.
+   * Старая сессия без meta получает запись в журнале именно здесь.
+   * @returns {string} сохранённое имя
+   */
+  static rename(id, rawName) {
+    const file = Session.fileOf(id);
+    if (!fs.existsSync(file)) throw new Error(`Сессия не найдена: ${id}`);
+    const name = cleanManualName(rawName);
+    fs.appendFileSync(file, JSON.stringify({ ts: Date.now(), entry: { kind: 'meta', meta: { name, source: 'manual' } } }) + '\n', 'utf8');
+    return name;
   }
 
   /** Путь к журналу сессии; id проверяется, чтобы не выйти из папки сессий. */
@@ -186,4 +233,4 @@ class Session {
   }
 }
 
-module.exports = { Session };
+module.exports = { Session, MANUAL_NAME_MAX };
