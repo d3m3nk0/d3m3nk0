@@ -293,7 +293,9 @@ class Agent {
         }
 
         streamed = ''; // ответ получен целиком и сохраняется ниже
-        const assistantMessage = { role: 'assistant', blocks: result.blocks };
+        // usage хранится в самом сообщении: после перезагрузки сессии счётчик
+        // берётся из журнала и не пропадает.
+        const assistantMessage = { role: 'assistant', blocks: result.blocks, ...(result.usage ? { usage: result.usage } : {}) };
         this.messages.push(assistantMessage);
         this.session?.append({ kind: 'message', message: assistantMessage });
         this.emit({ type: 'assistant_message', message: assistantMessage, usage: result.usage });

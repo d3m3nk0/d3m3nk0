@@ -66,12 +66,33 @@ function renderAssistant(node, now = false) {
   });
 }
 
-function addAssistant(text) {
+function addAssistant(text, usage) {
   const node = el('div', 'msg assistant md');
   rawText.set(node, text);
   renderAssistant(node, true);
   transcript.append(node);
+  // Строка расхода — отдельным узлом после ответа: сама карточка перерисовывается
+  // при стриме, и всё, что внутри неё, стёрлось бы.
+  if (usage !== undefined) addUsage(node, usage);
   return node;
+}
+
+/** «токены: ↑ 1 234 · ↓ 567 · кэш 900»; без usage от провайдера — прочерк. */
+function usageText(u) {
+  if (!u) return 'токены: —';
+  const parts = [`↑ ${fmt(u.input)}`, `↓ ${fmt(u.output)}`];
+  if (u.cacheRead) parts.push(`кэш ${fmt(u.cacheRead)}`);
+  if (u.cacheWrite) parts.push(`в кэш ${fmt(u.cacheWrite)}`);
+  return `токены: ${parts.join(' · ')}`;
+}
+
+function addUsage(afterNode, usage) {
+  const meta = el('div', 'msg-meta', usageText(usage));
+  meta.title =
+    'Вход — история, правила и схемы инструментов; выход — ответ модели; ' +
+    'кэш — часть входа, прочитанная из кэша провайдера (дешевле обычного входа).';
+  afterNode.after(meta);
+  return meta;
 }
 
 function ensureAssistant() {
@@ -285,7 +306,7 @@ function renderHistory(messages) {
     for (const b of m.blocks || []) {
       if (b.type === 'text' && b.text.trim()) {
         if (m.role === 'user') addUser(b.text);
-        else addAssistant(b.text);
+        else addAssistant(b.text, m.usage);
       } else if (b.type === 'tool_use') {
         addToolCard(b.id, b.name, b.input);
         const res = resultsById.get(b.id);
@@ -420,13 +441,16 @@ window.d3.onEvent((ev) => {
         .filter((b) => b.type === 'text')
         .map((b) => b.text)
         .join('');
-      if (text) {
-        const node = ensureAssistant();
+      const node = text ? ensureAssistant() : null;
+      if (node) {
         rawText.set(node, text);
         renderAssistant(node, true);
         scrollDown();
       }
       endAssistant();
+      // Прочерк вместо цифр, если провайдер usage не прислал, — но строка есть
+      // всегда: по ней видно, что расход не показан, а не что его нет.
+      if (node) addUsage(node, ev.usage);
       break;
     }
     case 'tool_start':

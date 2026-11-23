@@ -54,6 +54,12 @@ async function main() {
       console.log(`→ ${ev.name} ${JSON.stringify(ev.input)}`);
     } else if (ev.type === 'tool_end') {
       console.log(`${ev.ok ? '✓' : '✗'} ${ev.name}: ${ev.output.split('\n')[0].slice(0, 120)}`);
+    } else if (ev.type === 'turn_end') {
+      // Расход за ход. Прочерк — если провайдер usage не прислал.
+      const u = ev.usage;
+      const parts = u ? [`↑ ${u.input}`, `↓ ${u.output}`] : [];
+      if (u?.cacheRead) parts.push(`кэш ${u.cacheRead}`);
+      console.log(`  · токены: ${u ? parts.join(' · ') : '—'}`);
     } else if (ev.type === 'error') {
       console.error(`\nОшибка: ${ev.message}`);
     } else if (ev.type === 'guard_stop') {

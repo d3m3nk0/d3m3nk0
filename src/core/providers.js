@@ -157,7 +157,10 @@ async function runAnthropic({ config, system, messages, tools, onText, onToolSta
       } catch {
         continue;
       }
-      if (ev.type === 'content_block_start') {
+      if (ev.type === 'message_start') {
+        // Вход и кэш приходят один раз в начале ответа, выход — в message_delta.
+        if (ev.message?.usage) usage = { ...(usage || {}), ...ev.message.usage };
+      } else if (ev.type === 'content_block_start') {
         const cb = ev.content_block || {};
         if (cb.type === 'tool_use') {
           current = { type: 'tool_use', id: cb.id, name: cb.name, json: '' };
@@ -255,6 +258,9 @@ async function runOpenAI({ config, system, messages, tools, onText, onToolStart,
     temperature: config.temperature,
     max_tokens: config.maxTokens,
     stream: true,
+    // usage в стриме приходит только с этим флагом: без него DeepSeek и
+    // OpenRouter отдают пустой объект, и счётчик в окне показывал бы прочерк.
+    stream_options: { include_usage: true },
   };
   if (tools.length) body.tools = toOpenAITools(tools);
 
@@ -272,14 +278,21 @@ async function runOpenAI({ config, system, messages, tools, onText, onToolStart,
 
   let res = await request(body);
   if (!res.ok) {
+    const status = res.status;
     const errText = await res.text();
-    // Сервер без стриминга: повторяем тот же запрос обычным ответом.
-    if ((res.status === 400 || res.status === 422) && /stream/i.test(errText)) {
-      res = await request({ ...body, stream: false });
-      if (!res.ok) throw new Error(`OpenAI-совместимый API ${res.status}: ${(await res.text()).slice(0, 800)}`);
+    const retriable = status === 400 || status === 422;
+    if (retriable && /stream_options|include_usage/i.test(errText)) {
+      // Сервер не знает флаг счётчика: работаем без usage, но со стримингом.
+      // Проверяем это раньше общего /stream/, иначе потеряли бы и стриминг.
+      const { stream_options: _drop, ...plain } = body;
+      res = await request(plain);
+    } else if (retriable && /stream/i.test(errText)) {
+      // Сервер без стриминга: повторяем тот же запрос обычным ответом.
+      res = await request({ ...body, stream: false, stream_options: undefined });
     } else {
-      throw new Error(`OpenAI-совместимый API ${res.status}: ${errText.slice(0, 800)}`);
+      throw new Error(`OpenAI-совместимый API ${status}: ${errText.slice(0, 800)}`);
     }
+    if (!res.ok) throw new Error(`OpenAI-совместимый API ${res.status}: ${(await res.text()).slice(0, 800)}`);
   }
 
   onOpen?.(); // сервер ответил — дальше ждём уже не сеть, а генерацию
@@ -371,9 +384,40 @@ function openAIWhole(raw, onText, onToolStart, onReasoning) {
 
 /* --------------------------------- Dispatcher ----------------------------- */
 
+/**
+ * Привести usage провайдера к одному виду: { input, output, cacheRead, cacheWrite }.
+ * null — провайдер ничего не прислал; окно и CLI покажут прочерк, а не упадут.
+ *
+ * Разница, которую нельзя замазать: у Anthropic input_tokens — только
+ * некэшированная часть, кэш приходит отдельными полями. У OpenAI наоборот,
+ * prompt_tokens включает всё, а прочитанное из кэша лежит в
+ * prompt_tokens_details.cached_tokens.
+ */
+function normalizeUsage(provider, raw) {
+  if (!raw || typeof raw !== 'object') return null;
+  const num = (v) => (Number.isFinite(Number(v)) ? Number(v) : 0);
+
+  if (provider === 'openai') {
+    const input = num(raw.prompt_tokens);
+    const output = num(raw.completion_tokens);
+    const cacheRead = num(raw.prompt_tokens_details?.cached_tokens);
+    if (!input && !output && !cacheRead) return null;
+    return { input, output, cacheRead, cacheWrite: 0 };
+  }
+
+  const input = num(raw.input_tokens);
+  const output = num(raw.output_tokens);
+  const cacheRead = num(raw.cache_read_input_tokens);
+  const cacheWrite = num(raw.cache_creation_input_tokens);
+  if (!input && !output && !cacheRead && !cacheWrite) return null;
+  return { input, output, cacheRead, cacheWrite };
+}
+
 async function runTurn(opts) {
-  if (opts.config.provider === 'openai') return runOpenAI(opts);
-  return runAnthropic(opts);
+  const provider = opts.config.provider === 'openai' ? 'openai' : 'anthropic';
+  const res = provider === 'openai' ? await runOpenAI(opts) : await runAnthropic(opts);
+  // Один вид usage для агента, окна, CLI и тестов — независимо от провайдера.
+  return { ...res, usage: normalizeUsage(provider, res.usage) };
 }
 
 // Картинку модель считает не по длине base64, а по пикселям:
@@ -396,4 +440,4 @@ function estimateMessagesTokens(messages, system) {
   return n;
 }
 
-module.exports = { runTurn, endpoint, estimateTokens, estimateMessagesTokens, toOpenAIMessages, toAnthropicMessages, IMAGE_TOKENS };
+module.exports = { runTurn, endpoint, estimateTokens, estimateMessagesTokens, toOpenAIMessages, toAnthropicMessages, normalizeUsage, IMAGE_TOKENS };

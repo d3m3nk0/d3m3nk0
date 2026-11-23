@@ -302,6 +302,47 @@ async function main() {
       assert.strictEqual(res.busy, false, 'окно осталось занятым');
     });
 
+    await check('счётчик токенов под ответом: вход, выход, кэш', async () => {
+      // Переключаем окно на поддельный сервер — настоящая сеть и ключ не нужны.
+      const { startFakeLlm, STREAM_CHUNKS } = require('./helpers/fake-llm');
+      const fake = await startFakeLlm({ chunkDelayMs: 30 });
+      try {
+        const switched = await evaluate(`window.d3.setConfig({ baseUrl: ${JSON.stringify(fake.url('stream'))}, model: 'model-ok' })`);
+        assert.ok(switched && switched.ok, `окно не переключилось: ${JSON.stringify(switched)}`);
+        await sleep(700);
+
+        await evaluate(`document.getElementById('input').value = 'ответь'; document.getElementById('send').click();`);
+        // Ждём ответ, а не фиксированные 2,5 с: стриминг может начаться позже.
+        let res = null;
+        for (let i = 0; i < 40; i++) {
+          await sleep(250);
+          res = await evaluate(`(() => {
+            const answers = [...document.querySelectorAll('#transcript .msg.assistant')];
+            const metas = [...document.querySelectorAll('#transcript .msg-meta')];
+            return {
+              answer: answers.length ? answers[answers.length - 1].textContent : '',
+              meta: metas.length ? metas[metas.length - 1].textContent : '',
+            };
+          })()`);
+          if (res.answer) break;
+        }
+        const diag = JSON.stringify({ requests: fake.requests.length, ...res });
+        assert.strictEqual(res.answer, STREAM_CHUNKS.join(''), `ответ модели не отрисован: ${diag}`);
+        // Строка расхода — сразу под ответом, а не где-то в конце ленты.
+        assert.strictEqual(
+          await evaluate(`(() => {
+            const a = [...document.querySelectorAll('#transcript .msg.assistant')].pop();
+            return a && a.nextElementSibling ? a.nextElementSibling.className : '';
+          })()`),
+          'msg-meta',
+          'строки расхода нет под ответом'
+        );
+        assert.match(res.meta, /токены: ↑ 1\s200 · ↓ 34 · кэш 900/, `строка расхода: «${res.meta}»`);
+      } finally {
+        await fake.close();
+      }
+    });
+
     await check('в консоли окна нет ошибок (CSP, обработчики)', async () => {
       const errors = cdp.events
         .filter((e) => e.method === 'Runtime.exceptionThrown' || (e.method === 'Log.entryAdded' && e.params.entry.level === 'error'))

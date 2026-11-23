@@ -23,11 +23,11 @@ const HOME = path.join(TMP_ROOT, 'home');
 fs.mkdirSync(HOME, { recursive: true });
 process.env.D3M3NK0_HOME = HOME; // до require ядра: config.js читает его при загрузке
 
-const { startFakeLlm, STREAM_CHUNKS, WHOLE_TEXT, AFTER_TOOL_TEXT } = require('./helpers/fake-llm');
+const { startFakeLlm, STREAM_CHUNKS, WHOLE_TEXT, AFTER_TOOL_TEXT, USAGE } = require('./helpers/fake-llm');
 const { loadConfig } = require('../src/core/config');
 const { Session } = require('../src/core/session');
 const { Agent, buildSystemPrompt, loadProjectRules, projectRuleFiles, RULES_FILES, RULES_MAX_CHARS } = require('../src/core/agent');
-const { estimateTokens, estimateMessagesTokens } = require('../src/core/providers');
+const { estimateTokens, estimateMessagesTokens, normalizeUsage, runTurn } = require('../src/core/providers');
 const { truncateToolResult, prepareForRequest, toolSchemaTokens } = require('../src/core/context');
 
 const CTRL_C = '\u0003';
@@ -697,6 +697,94 @@ async function main() {
     const nv = fallbackModels({ model: 'nvidia/nemotron-3.5-lightning-30b-a3b', baseUrl: 'https://integrate.api.nvidia.com/v1', fallbackModels: null });
     assert.ok(nv.length >= 2 && !nv.includes('nvidia/nemotron-3.5-lightning-30b-a3b'), nv.join());
     assert.deepStrictEqual(fallbackModels({ model: 'x', baseUrl: 'https://api.anthropic.com', fallbackModels: null }), []);
+  });
+
+  /* --------------------------- счётчик токенов (usage) --------------------------- */
+
+  await check('usage: OpenAI — в запросе include_usage, кэш отдельно от входа', async () => {
+    const config = {
+      ...loadConfig(), provider: 'openai', baseUrl: llm.url('stream'), apiKey: 'test', workdir: TMP_ROOT,
+      mcpServers: {}, model: 'model-ok', fallbackModels: [],
+    };
+    const events = [];
+    const agent = new Agent({ config, session: null, mcp: null, emit: (e) => events.push(e) });
+    const before = llm.requests.length;
+    await agent.send('ответь');
+
+    const req = llm.requests[before];
+    assert.deepStrictEqual(req.streamOptions, { include_usage: true }, 'без этого флага DeepSeek не присылает usage');
+
+    const expected = { input: USAGE.prompt_tokens, output: USAGE.completion_tokens, cacheRead: USAGE.prompt_tokens_details.cached_tokens, cacheWrite: 0 };
+    const msg = events.find((e) => e.type === 'assistant_message');
+    assert.deepStrictEqual(msg.usage, expected, 'usage не нормализован');
+    // usage лежит в самом сообщении: после перезагрузки сессии счётчик не пропадёт
+    assert.deepStrictEqual(agent.history[agent.history.length - 1].usage, expected);
+  });
+
+  await check('usage: провайдер не прислал — null, а не нули и не падение', async () => {
+    const config = {
+      ...loadConfig(), provider: 'openai', baseUrl: llm.url('nousage'), apiKey: 'test', workdir: TMP_ROOT,
+      mcpServers: {}, model: 'model-ok', fallbackModels: [],
+    };
+    const events = [];
+    const agent = new Agent({ config, session: null, mcp: null, emit: (e) => events.push(e) });
+    await agent.send('ответь');
+
+    const msg = events.find((e) => e.type === 'assistant_message');
+    assert.strictEqual(msg.usage, null, 'пустой usage должен быть null');
+    assert.ok(!('usage' in agent.history[agent.history.length - 1]), 'в историю попал пустой usage');
+    // окно показывает прочерк по null, поэтому нули выдавать нельзя
+    assert.strictEqual(normalizeUsage('openai', {}), null);
+    assert.strictEqual(normalizeUsage('anthropic', undefined), null);
+  });
+
+  await check('usage: сервер не знает stream_options — стриминг остаётся, прочерк', async () => {
+    const config = {
+      ...loadConfig(), provider: 'openai', baseUrl: llm.url('nooptions'), apiKey: 'test', workdir: TMP_ROOT,
+      mcpServers: {}, model: 'model-ok', fallbackModels: [],
+    };
+    const events = [];
+    const agent = new Agent({ config, session: null, mcp: null, emit: (e) => events.push(e) });
+    const before = llm.requests.length;
+    await agent.send('ответь');
+    const reqs = llm.requests.slice(before);
+    // Один повтор: флаг убран, stream остался. Иначе потеряли бы стриминг целиком.
+    assert.strictEqual(reqs.length, 2, `запросов: ${reqs.length}`);
+    assert.deepStrictEqual(reqs[0].streamOptions, { include_usage: true });
+    assert.strictEqual(reqs[1].streamOptions, null, 'флаг не убран');
+    assert.strictEqual(reqs[1].stream, true, 'потеряли стриминг');
+    const msg = events.find((e) => e.type === 'assistant_message');
+    assert.strictEqual(msg.message.blocks.map((b) => b.text).join(''), STREAM_CHUNKS.join(''), 'ответ не пришёл');
+    assert.strictEqual(msg.usage, null, 'usage быть не может — сервер его не прислал');
+  });
+
+  await check('usage: Anthropic — вход и кэш из message_start, выход из message_delta', async () => {
+    const http = require('node:http');
+    const server = http.createServer((req, res) => {
+      req.resume();
+      res.writeHead(200, { 'content-type': 'text/event-stream' });
+      const send = (o) => res.write(`data: ${JSON.stringify(o)}\n\n`);
+      send({ type: 'message_start', message: { usage: { input_tokens: 1500, cache_read_input_tokens: 1200, cache_creation_input_tokens: 40 } } });
+      send({ type: 'content_block_start', index: 0, content_block: { type: 'text', text: '' } });
+      send({ type: 'content_block_delta', index: 0, delta: { type: 'text_delta', text: 'ок' } });
+      send({ type: 'content_block_stop', index: 0 });
+      send({ type: 'message_delta', delta: { stop_reason: 'end_turn' }, usage: { output_tokens: 200 } });
+      res.end();
+    });
+    await new Promise((r) => server.listen(0, '127.0.0.1', r));
+    try {
+      const out = await runTurn({
+        config: { provider: 'anthropic', baseUrl: `http://127.0.0.1:${server.address().port}`, apiKey: 'x', model: 'm', maxTokens: 64, temperature: 0 },
+        system: 'system',
+        messages: [{ role: 'user', blocks: [{ type: 'text', text: 'привет' }] }],
+        tools: [],
+      });
+      assert.strictEqual(out.blocks[0].text, 'ок');
+      // вход и кэш приходят только в message_start — без её разбора остаётся один выход
+      assert.deepStrictEqual(out.usage, { input: 1500, output: 200, cacheRead: 1200, cacheWrite: 40 });
+    } finally {
+      await new Promise((r) => server.close(r));
+    }
   });
 
   /* ------------------------- «Разрешать всегда» ------------------------- */

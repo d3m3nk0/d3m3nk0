@@ -10,6 +10,8 @@
  *                       запрос без stream — обычный JSON
  *       /json/v1      — stream: true молча игнорируется, ответ — обычный JSON
  *       /stream/v1    — SSE (по умолчанию)
+ *       /nousage/v1   — SSE без usage: провайдер «не умеет» считать токены
+ *       /nooptions/v1 — 400 на stream_options: старый сервер, стриминг работает
  *   - для SSE:
  *       последнее сообщение — результат инструмента (role: tool) — AFTER_TOOL_TEXT
  *     иначе по тексту последнего сообщения пользователя:
@@ -29,6 +31,14 @@ const http = require('node:http');
 const STREAM_CHUNKS = ['Первый ', 'кусок, ', 'второй ', 'кусок, ', 'третий кусок.'];
 const WHOLE_TEXT = 'Ответ целиком без стриминга.';
 const AFTER_TOOL_TEXT = 'Продолжаю после инструмента.';
+// usage «как у OpenAI»: вход с частью из кэша, выход. Приходит последним чанком
+// с пустым choices — только если клиент попросил include_usage.
+const USAGE = {
+  prompt_tokens: 1200,
+  completion_tokens: 34,
+  total_tokens: 1234,
+  prompt_tokens_details: { cached_tokens: 900 },
+};
 const VIEW_CALL = { name: 'view_image', arguments: JSON.stringify({ path: 'pic.png' }) };
 const WRITE_CALL = { name: 'write_file', arguments: JSON.stringify({ path: 'denied.txt', content: 'не должно появиться' }) };
 
@@ -66,7 +76,15 @@ function startFakeLlm(opts = {}) {
     // Для проверок картинок: порядок ролей и data-URL всех image_url в запросе.
     const msgsIn = payload.messages || [];
     const images = msgsIn.flatMap((m) => (Array.isArray(m.content) ? m.content : []).filter((c) => c.type === 'image_url').map((c) => c.image_url.url));
-    requests.push({ mode, model: payload.model, stream: !!payload.stream, text: lastUserText(payload), roles: msgsIn.map((m) => m.role), images });
+    requests.push({
+      mode,
+      model: payload.model,
+      stream: !!payload.stream,
+      streamOptions: payload.stream_options ?? null,
+      text: lastUserText(payload),
+      roles: msgsIn.map((m) => m.role),
+      images,
+    });
 
     // Поведение по имени модели (тесты устойчивости):
     //   model-silent — не отвечает вовсе, пока клиент не оборвёт соединение;
@@ -80,9 +98,15 @@ function startFakeLlm(opts = {}) {
       return res.end(JSON.stringify({ error: { message: 'Too Many Requests' } }));
     }
 
+    const withUsage = mode !== 'nousage' && mode !== 'nooptions'; // без usage: проверка прочерка
     const whole = () => {
       res.writeHead(200, { 'content-type': 'application/json' });
-      res.end(JSON.stringify({ choices: [{ message: { role: 'assistant', content: WHOLE_TEXT }, finish_reason: 'stop' }] }));
+      res.end(
+        JSON.stringify({
+          choices: [{ message: { role: 'assistant', content: WHOLE_TEXT }, finish_reason: 'stop' }],
+          ...(withUsage ? { usage: USAGE } : {}),
+        })
+      );
     };
 
     if (mode === 'nostream') {
@@ -91,6 +115,12 @@ function startFakeLlm(opts = {}) {
         return res.end(JSON.stringify({ error: { message: 'stream is not supported by this model' } }));
       }
       return whole();
+    }
+    // Некоторые OpenAI-совместимые серверы (старый vLLM, шлюзы) не знают
+    // stream_options и отвечают 400. Стриминг при этом работает.
+    if (mode === 'nooptions' && payload.stream_options) {
+      res.writeHead(400, { 'content-type': 'application/json' });
+      return res.end(JSON.stringify({ error: { message: 'unknown parameter: stream_options' } }));
     }
     if (mode === 'json') return whole();
 
@@ -103,6 +133,8 @@ function startFakeLlm(opts = {}) {
     const alive = () => !res.destroyed && !res.writableEnded;
     const msgs = payload.messages || [];
     const done = () => {
+      // Как настоящий API: расход приходит последним чанком, с пустым choices.
+      if (withUsage) res.write(sse({ choices: [], usage: USAGE }));
       res.write('data: [DONE]\n\n');
       res.end();
     };
@@ -152,10 +184,7 @@ function startFakeLlm(opts = {}) {
         await sleep(chunkDelayMs);
       }
     }
-    if (alive()) {
-      res.write('data: [DONE]\n\n');
-      res.end();
-    }
+    if (alive()) done();
   });
 
   return new Promise((resolve) => {
@@ -171,4 +200,4 @@ function startFakeLlm(opts = {}) {
   });
 }
 
-module.exports = { startFakeLlm, STREAM_CHUNKS, WHOLE_TEXT, AFTER_TOOL_TEXT };
+module.exports = { startFakeLlm, STREAM_CHUNKS, WHOLE_TEXT, AFTER_TOOL_TEXT, USAGE };
