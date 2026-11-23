@@ -56,6 +56,11 @@ async function main() {
       console.log(`${ev.ok ? '✓' : '✗'} ${ev.name}: ${ev.output.split('\n')[0].slice(0, 120)}`);
     } else if (ev.type === 'error') {
       console.error(`\nОшибка: ${ev.message}`);
+    } else if (ev.type === 'guard_stop') {
+      console.log(`\n⚠ ${ev.message}`);
+    } else if (ev.type === 'info' && /повтор|переключаюсь|запасная|без вопроса/.test(ev.message)) {
+      // Повторы, запасная модель, «Разрешать всегда» — остальное (MCP, контекст) не шумит.
+      console.log(`  · ${ev.message}`);
     }
   };
 

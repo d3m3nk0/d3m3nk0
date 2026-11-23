@@ -445,6 +445,13 @@ window.d3.onEvent((ev) => {
     case 'info':
       addInfo(ev.message);
       break;
+    case 'guard_stop': {
+      // Защита от метаний: заметная плашка — агент ждёт подсказки.
+      const box = el('div', 'msg guard', `⚠ ${ev.message}`);
+      transcript.append(box);
+      scrollDown();
+      break;
+    }
     case 'error':
       addError(ev.message);
       break;

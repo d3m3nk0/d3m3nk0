@@ -701,6 +701,47 @@ async function main() {
     assert.ok(fs.existsSync(path.join(wd, 'denied.txt')), 'файл не записан');
   });
 
+  /* --------------------------- защита от метаний --------------------------- */
+
+  const runLoop = async (prompt) => {
+    const wd = fs.mkdtempSync(path.join(TMP_ROOT, 'loop-'));
+    const config = { ...loadConfig(), provider: 'openai', baseUrl: llm.url('stream'), apiKey: 'test', workdir: wd, permissionMode: 'yolo', mcpServers: {} };
+    const ev = [];
+    const agent = new Agent({ config, session: null, mcp: null, emit: (e) => ev.push(e) });
+    const before = llm.requests.length;
+    await agent.send(prompt);
+    return { ev, requests: llm.requests.length - before, agent };
+  };
+
+  await check('метания: 3 ошибки подряд — стоп и вопрос, а не 40 шагов', async () => {
+    const { ev, requests, agent } = await runLoop('упрямо открой картинку');
+    const stop = ev.find((e) => e.type === 'guard_stop');
+    assert.ok(stop && /3 неудачных вызова подряд/.test(stop.message), stop?.message || 'нет остановки');
+    assert.strictEqual(requests, 3, `запросов к модели: ${requests}`);
+    assert.ok(/защитой от метаний/.test(JSON.stringify(agent.history.at(-1))), 'в истории нет пометки для модели');
+    assert.strictEqual(agent.busy, false);
+  });
+
+  await check('метания: один и тот же успешный вызов по кругу — стоп', async () => {
+    const { ev, requests } = await runLoop('кругами смотри папку');
+    const stop = ev.find((e) => e.type === 'guard_stop');
+    assert.ok(stop && /хожу по кругу/.test(stop.message), stop?.message || 'нет остановки');
+    assert.strictEqual(requests, 3);
+  });
+
+  await check('метания: ненулевой код run_command — неудача, успех сбрасывает счёт', () => {
+    const { LoopGuard } = require('../src/core/agent');
+    const g = new LoopGuard();
+    const call = (i, cmd) => ({ id: `c${i}`, name: 'run_command', input: { command: cmd } });
+    const res = (i, out) => ({ id: `c${i}`, content: out, is_error: false });
+    assert.strictEqual(g.check([call(1, 'a')], [res(1, 'exit code: 1')]), null);
+    assert.strictEqual(g.check([call(2, 'b')], [res(2, 'exit code: 255')]), null);
+    assert.strictEqual(g.check([call(3, 'c')], [res(3, 'exit code: 0')]), null, 'успех не сбросил счёт');
+    assert.strictEqual(g.check([call(4, 'd')], [res(4, 'exit code: 1')]), null);
+    assert.ok(/неудачных/.test(g.check([call(5, 'e')], [res(5, 'exit code: 2')]) || '') === false, 'сработало на 2 подряд');
+    assert.ok(/3 неудачных/.test(g.check([call(6, 'f')], [res(6, 'exit code: 2')]) || ''), 'не сработало на 3 подряд');
+  });
+
   /* ------------------------------ read_pdf (PDF) ------------------------------- */
 
   /** Настоящий маленький PDF: по строке текста на страницу, смещения xref посчитаны. */

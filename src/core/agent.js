@@ -69,6 +69,51 @@ function buildSystemPrompt(config) {
   return lines.join('\n');
 }
 
+/**
+ * Защита от метаний в одном ходе пользователя.
+ *  - maxErrors подряд неудачных вызовов (ошибка инструмента или для run_command
+ *    ненулевой код выхода) → стоп;
+ *  - один и тот же вызов (имя + параметры) maxRepeats раз → стоп (ходит по кругу).
+ * check() возвращает причину остановки или null.
+ */
+class LoopGuard {
+  constructor(opts = {}) {
+    this.maxErrors = Number(opts?.maxErrors) > 0 ? Number(opts.maxErrors) : 3;
+    this.maxRepeats = Number(opts?.maxRepeats) > 0 ? Number(opts.maxRepeats) : 3;
+    this.errorStreak = 0;
+    this.lastError = '';
+    this.seen = new Map();
+  }
+
+  static failed(call, result) {
+    if (result.is_error) return true;
+    if (call.name === 'run_command') {
+      const m = String(result.content || '').match(/^exit code: (-?\d+)/);
+      if (m && m[1] !== '0') return true;
+    }
+    return false;
+  }
+
+  check(calls, results) {
+    for (const call of calls) {
+      // Сначала ошибки: сообщение с текстом последней ошибки полезнее, чем «по кругу».
+      const result = results.find((r) => r.id === call.id);
+      if (result && LoopGuard.failed(call, result)) {
+        this.errorStreak += 1;
+        this.lastError = `${call.name}: ${String(result.content || '').replace(/\s+/g, ' ').slice(0, 160)}`;
+        if (this.errorStreak >= this.maxErrors) return `${this.errorStreak} неудачных вызова подряд (последний — ${this.lastError})`;
+      } else if (result) {
+        this.errorStreak = 0;
+      }
+      const key = `${call.name} ${JSON.stringify(call.input || {})}`;
+      const n = (this.seen.get(key) || 0) + 1;
+      this.seen.set(key, n);
+      if (n >= this.maxRepeats) return `${call.name} вызван ${n} раза с одними и теми же параметрами — похоже, хожу по кругу`;
+    }
+    return null;
+  }
+}
+
 /** Копия сообщения без данных картинок (для журнала сессии). */
 function withoutImageData(message) {
   return {
@@ -190,6 +235,7 @@ class Agent {
     // Текст текущего шага, уже показанный пользователю. Живёт вне try, чтобы
     // при отмене или обрыве посреди стрима попасть в историю, а не пропасть.
     let streamed = '';
+    const guard = new LoopGuard(this.config.loopGuard);
 
     try {
       for (let step = 0; step < MAX_STEPS; step++) {
@@ -282,6 +328,17 @@ class Agent {
         this.messages.push(toolMessage);
         // В журнал — без base64: картинка остаётся на диске, в истории только путь.
         this.session?.append({ kind: 'message', message: withoutImageData(toolMessage) });
+
+        // Защита от метаний: ошибки подряд или один и тот же вызов по кругу —
+        // остановиться и спросить пользователя, а не пробовать двадцать вариантов.
+        const stop = guard.check(toolUses, results);
+        if (stop) {
+          const note = { role: 'assistant', blocks: [{ type: 'text', text: `[Остановлено защитой от метаний: ${stop}]` }] };
+          this.messages.push(note);
+          this.session?.append({ kind: 'message', message: note });
+          this.emit({ type: 'guard_stop', message: `Остановился: ${stop}. Подскажите, что делать дальше.` });
+          break;
+        }
       }
     } catch (e) {
       const aborted = e.name === 'AbortError';
@@ -311,4 +368,4 @@ class Agent {
   }
 }
 
-module.exports = { Agent, buildSystemPrompt, loadProjectRules, needsApproval, withoutImageData, RULES_MAX_CHARS };
+module.exports = { Agent, LoopGuard, buildSystemPrompt, loadProjectRules, needsApproval, withoutImageData, RULES_MAX_CHARS };

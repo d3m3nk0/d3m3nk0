@@ -107,6 +107,17 @@ function startFakeLlm(opts = {}) {
       res.end();
     };
 
+    // Защита от метаний: «упрямо» — всегда вызывать падающий инструмент,
+    // «кругами» — всегда один и тот же успешный вызов (даже после результата).
+    if (/упрямо|кругами/.test(text)) {
+      const fn = /упрямо/.test(text)
+        ? { name: 'view_image', arguments: JSON.stringify({ path: 'нет-такой.png' }) }
+        : { name: 'list_dir', arguments: JSON.stringify({ path: '.' }) };
+      const id = 'call_loop_' + msgs.length;
+      res.write(sse({ choices: [{ index: 0, delta: { tool_calls: [{ index: 0, id, type: 'function', function: fn }] } }] }));
+      res.write(sse({ choices: [{ index: 0, delta: {}, finish_reason: 'tool_calls' }] }));
+      return done();
+    }
     // После результата инструмента (в том числе отказа) модель продолжает ход текстом.
     if (msgs[msgs.length - 1]?.role === 'tool') {
       res.write(delta(AFTER_TOOL_TEXT));

@@ -679,3 +679,13 @@ input.switch:focus-visible { outline: 2px solid var(--accent); outline-offset: 2
 .md .katex { font-size: 1.08em; color: var(--text); }
 .md .math-block .katex-display { margin: 0; }
 .md .katex-error { color: var(--err) !important; }
+
+/* Защита от метаний остановила агента — ждёт подсказки */
+.msg.guard {
+  border: 1px solid var(--perm-border);
+  background: var(--perm-bg);
+  color: var(--perm-fg);
+  border-radius: 10px;
+  padding: 9px 13px;
+  font-size: 13px;
+}
