@@ -516,6 +516,21 @@ async function main() {
     assert.strictEqual(b[4].text, 'не закрыт');
   });
 
+  await check('формулы: $…$, \\(…\\), $$…$$ в строке; деньги и $переменные — текст', () => {
+    const kinds = (t) => parseInline(t).map((x) => (x.t === 'math' ? `M${x.display ? 'D' : ''}:${x.v}` : x.t));
+    assert.deepStrictEqual(kinds('Напряжение $\\sigma = M_f/W$ и $x$.'), ['text', 'M:\\sigma = M_f/W', 'text', 'M:x', 'text']);
+    assert.deepStrictEqual(kinds('Стоит 10$ и 20$, а $p = Get-Item $a'), ['text'], 'деньги или $переменные стали формулой');
+    assert.deepStrictEqual(kinds('скобки \\(a+b\\) и \\[c\\]'), ['text', 'M:a+b', 'text', 'MD:c']);
+    assert.deepStrictEqual(kinds('`$не формула$` и $$\\frac{1}{2}$$'), ['code', 'text', 'MD:\\frac{1}{2}']);
+  });
+
+  await check('формулы: блок $$…$$ / \\[…\\] в несколько строк; незакрытый — пока текст', () => {
+    const b = parseBlocks('Текст\n$$\n\\tau_{max} = \\frac{16 M_t}{\\pi d^3}\n$$\nдальше\n\\[ x^2 \\]\n$$ незакрыта');
+    assert.deepStrictEqual(b.map((x) => x.type), ['para', 'math', 'para', 'math', 'para']);
+    assert.strictEqual(b[1].tex, '\\tau_{max} = \\frac{16 M_t}{\\pi d^3}');
+    assert.strictEqual(b[3].tex, 'x^2');
+  });
+
   await check('markdown: опасные ссылки и HTML остаются текстом', () => {
     const t = parseInline('[x](javascript:alert(1)) <img src=x onerror=alert(1)> [ok](https://example.org)');
     assert.ok(!t.some((x) => x.t === 'link' && /javascript/i.test(x.href)), 'javascript: стал ссылкой');

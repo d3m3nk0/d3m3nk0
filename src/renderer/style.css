@@ -673,3 +673,9 @@ input.switch:focus-visible { outline: 2px solid var(--accent); outline-offset: 2
 .tool-image { display: block; max-width: 100%; max-height: 240px; margin: 8px 11px; border-radius: 6px; border: 1px solid var(--line); cursor: zoom-in; background: #fff; }
 .tool-image.big { max-height: none; cursor: zoom-out; }
 .tool-image-note { padding: 6px 11px; font-size: 12px; color: var(--muted); }
+
+/* Формулы KaTeX в ответах */
+.md .math-block { margin: 6px 0 10px; overflow-x: auto; overflow-y: hidden; padding: 2px 0; }
+.md .katex { font-size: 1.08em; color: var(--text); }
+.md .math-block .katex-display { margin: 0; }
+.md .katex-error { color: var(--err) !important; }

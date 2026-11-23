@@ -87,6 +87,20 @@ function parseInline(text) {
       flush();
       out.push({ t: 'code', v: m[2].trim() === '' ? m[2] : m[2].replace(/^ (.*) $/, '$1') });
       i += m[0].length;
+    } else if ((m = rest.match(/^\$\$([\s\S]+?)\$\$/)) || (m = rest.match(/^\\\[([\s\S]+?)\\\]/))) {
+      flush();
+      out.push({ t: 'math', v: m[1].trim(), display: true });
+      i += m[0].length;
+    } else if ((m = rest.match(/^\\\(([\s\S]+?)\\\)/))) {
+      flush();
+      out.push({ t: 'math', v: m[1].trim(), display: false });
+      i += m[0].length;
+    } else if ((m = rest.match(/^\$(?=[^\s$])([^$\n]*?[^\s$\\])\$(?!\d)/)) && !/\d$/.test(buf)) {
+      // $…$ как в Pandoc: после «$» не пробел, перед закрывающим не пробел, за ним не цифра —
+      // поэтому «10$ и 20$» и «$p = …» остаются текстом.
+      flush();
+      out.push({ t: 'math', v: m[1], display: false });
+      i += m[0].length;
     } else if ((m = rest.match(/^\[([^\]\n]+)\]\(([^)\s]+)\)/)) && SAFE_URL.test(m[2])) {
       flush();
       out.push({ t: 'link', text: m[1], href: m[2] });
@@ -115,6 +129,7 @@ function parseInline(text) {
 /* --------------------------------- разбор блоков -------------------------------- */
 
 const RE_FENCE = /^\s{0,3}(`{3,}|~{3,})\s*([\w+#.-]*)\s*$/;
+const RE_MATH_OPEN = /^\s{0,3}(\$\$|\\\[)/;
 const RE_HEADING = /^\s{0,3}(#{1,6})\s+(.*?)\s*#*\s*$/;
 const RE_HR = /^\s{0,3}([-*_])(\s*\1){2,}\s*$/;
 const RE_UL = /^(\s*)[-*+]\s+(.*)$/;
@@ -132,6 +147,7 @@ function splitRow(line) {
 function isBlockStart(line, next) {
   return (
     RE_FENCE.test(line) ||
+    RE_MATH_OPEN.test(line) ||
     RE_HEADING.test(line) ||
     RE_HR.test(line) ||
     RE_UL.test(line) ||
@@ -152,6 +168,31 @@ function parseBlocks(text) {
     if (!line.trim()) {
       i += 1;
       continue;
+    }
+
+    // Формула отдельным блоком: $$ … $$ или \[ … \] (в одну строку или в несколько).
+    if (RE_MATH_OPEN.test(line)) {
+      const t = line.trim();
+      const close = t.startsWith('$$') ? '$$' : '\\]';
+      const first = t.slice(2);
+      const endHere = first.indexOf(close);
+      if (endHere >= 0 && first.slice(endHere + 2).trim() === '') {
+        blocks.push({ type: 'math', tex: first.slice(0, endHere).trim() });
+        i += 1;
+        continue;
+      }
+      if (endHere < 0) {
+        const body = [first];
+        let j = i + 1;
+        while (j < lines.length && !lines[j].includes(close)) body.push(lines[j++]);
+        if (j < lines.length) {
+          body.push(lines[j].slice(0, lines[j].indexOf(close)));
+          blocks.push({ type: 'math', tex: body.join('\n').trim() });
+          i = j + 1;
+          continue;
+        }
+        // Не закрыта (ответ ещё печатается) — пока показываем как текст.
+      }
     }
 
     if ((m = line.match(RE_FENCE))) {
@@ -243,9 +284,32 @@ function parseBlocks(text) {
 
 /* -------------------------------- построение DOM -------------------------------- */
 
+/**
+ * Формула через KaTeX (window.katex из node_modules). trust: false — команды
+ * вроде \href и \includegraphics запрещены, так что формула модели не может
+ * вставить ссылку или картинку. Ошибка в TeX — красный текст формулы, не падение.
+ */
+function renderTex(tex, display) {
+  const el = document.createElement(display ? 'div' : 'span');
+  el.className = display ? 'math math-block' : 'math';
+  const k = typeof window !== 'undefined' ? window.katex : null;
+  if (!k) {
+    el.textContent = display ? `$$${tex}$$` : `$${tex}$`;
+    return el;
+  }
+  try {
+    k.render(tex, el, { displayMode: display, throwOnError: false, trust: false, strict: 'ignore', output: 'htmlAndMathml' });
+  } catch {
+    el.textContent = tex;
+  }
+  el.title = tex; // исходный TeX — при наведении
+  return el;
+}
+
 function buildInline(tokens, parent, hooks) {
   for (const tk of tokens) {
     if (tk.t === 'text') parent.append(document.createTextNode(tk.v));
+    else if (tk.t === 'math') parent.append(renderTex(tk.v, tk.display));
     else if (tk.t === 'code') {
       const c = document.createElement('code');
       c.textContent = tk.v;
@@ -270,7 +334,9 @@ function buildInline(tokens, parent, hooks) {
 
 function buildBlocks(blocks, parent, hooks) {
   for (const b of blocks) {
-    if (b.type === 'para') {
+    if (b.type === 'math') {
+      parent.append(renderTex(b.tex, true));
+    } else if (b.type === 'para') {
       const p = document.createElement('p');
       buildInline(b.inline, p, hooks);
       parent.append(p);
