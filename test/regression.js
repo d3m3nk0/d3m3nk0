@@ -461,6 +461,38 @@ async function main() {
     assert.ok(fs.existsSync(outside), 'файл вне папки сессий удалён');
   });
 
+  const { parseBlocks, parseInline } = require('../src/renderer/markdown');
+
+  await check('markdown: жирный, курсив, `код` и snake_case без ложного курсива', () => {
+    const t = parseInline('**жир** и *кур* и `read_file` и snake_case_name');
+    assert.deepStrictEqual(t.map((x) => x.t), ['bold', 'text', 'italic', 'text', 'code', 'text']);
+    assert.strictEqual(t[5].v, ' и snake_case_name');
+  });
+
+  await check('markdown: блоки — список, таблица, код, незакрытый код при стриминге', () => {
+    const b = parseBlocks('Текст\n\n- а\n- б\n\n| x | y |\n|---|---|\n| 1 | 2 |\n\n```js\nlet a\n```\n```py\nне закрыт');
+    assert.deepStrictEqual(b.map((x) => x.type), ['para', 'list', 'table', 'code', 'code']);
+    assert.strictEqual(b[2].rows.length, 1);
+    assert.strictEqual(b[3].lang, 'js');
+    assert.strictEqual(b[4].text, 'не закрыт');
+  });
+
+  await check('markdown: опасные ссылки и HTML остаются текстом', () => {
+    const t = parseInline('[x](javascript:alert(1)) <img src=x onerror=alert(1)> [ok](https://example.org)');
+    assert.ok(!t.some((x) => x.t === 'link' && /javascript/i.test(x.href)), 'javascript: стал ссылкой');
+    assert.ok(t.some((x) => x.t === 'text' && x.v.includes('<img')), 'HTML пропал из текста');
+    assert.ok(t.some((x) => x.t === 'link' && x.href === 'https://example.org'), 'нормальная ссылка не распознана');
+  });
+
+  await check('Agent.setModel: модель меняется, история остаётся, промпт обновлён', () => {
+    const a = new Agent({ config: { provider: 'openai', model: 'old-model', workdir: TMP_ROOT }, session: null, mcp: null });
+    a.loadHistory([{ role: 'user', blocks: [{ type: 'text', text: 'привет' }] }]);
+    a.setModel('new-model');
+    assert.strictEqual(a.config.model, 'new-model');
+    assert.strictEqual(a.history.length, 1, 'история потеряна');
+    assert.ok(a.system.includes('new-model') && !a.system.includes('old-model'), 'промпт не обновлён');
+  });
+
   const rulesDir = path.join(TMP_ROOT, 'rules');
   fs.mkdirSync(rulesDir, { recursive: true });
   const baseCfg = { provider: 'openai', model: 'fake' };

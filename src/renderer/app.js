@@ -41,10 +41,42 @@ function addError(text) {
   scrollDown();
 }
 
+/* ------------------------- ответы модели в Markdown ------------------------ */
+
+const mdHooks = { openLink: (url) => window.d3.openExternal(url) };
+const rawText = new WeakMap(); // пузырь ответа -> его исходный текст
+const pendingRender = new Set();
+let renderQueued = false;
+
+/** Перерисовать пузырь из rawText. Во время стриминга — не чаще раза за кадр. */
+function renderAssistant(node, now = false) {
+  if (now) {
+    pendingRender.delete(node);
+    window.Markdown.renderMarkdownInto(node, rawText.get(node) || '', mdHooks);
+    return;
+  }
+  pendingRender.add(node);
+  if (renderQueued) return;
+  renderQueued = true;
+  requestAnimationFrame(() => {
+    renderQueued = false;
+    for (const n of pendingRender) window.Markdown.renderMarkdownInto(n, rawText.get(n) || '', mdHooks);
+    pendingRender.clear();
+    scrollDown();
+  });
+}
+
+function addAssistant(text) {
+  const node = el('div', 'msg assistant md');
+  rawText.set(node, text);
+  renderAssistant(node, true);
+  transcript.append(node);
+  return node;
+}
+
 function ensureAssistant() {
   if (!currentAssistant) {
-    currentAssistant = el('div', 'msg assistant', '');
-    transcript.append(currentAssistant);
+    currentAssistant = addAssistant('');
   }
   return currentAssistant;
 }
@@ -193,10 +225,16 @@ function showEmptyState() {
   const box = el('div', 'empty');
   box.append(el('h3', null, 'Готов к работе'));
   const list = el('ul');
+  const modeText = {
+    ask: 'Правки файлов и команды спрашивают подтверждение (режим ask).',
+    'allow-edits': 'Правки файлов без спроса, команды и MCP — с подтверждением (режим allow-edits).',
+    yolo: 'Агент ничего не спрашивает (режим yolo). Осторожно.',
+  };
   for (const line of [
     'Опишите задачу — агент сам прочитает нужные файлы и покажет, что делает.',
-    'Правки файлов и команды спрашивают подтверждение (режим ask).',
+    modeText[currentConfig?.permissionMode] || modeText.ask,
     'MCP-серверы подключаются в настройках и приносят свои инструменты.',
+    'Модель меняется кликом по её названию вверху.',
   ]) {
     list.append(el('li', null, line));
   }
@@ -221,10 +259,7 @@ function renderHistory(messages) {
     for (const b of m.blocks || []) {
       if (b.type === 'text' && b.text.trim()) {
         if (m.role === 'user') addUser(b.text);
-        else {
-          const node = el('div', 'msg assistant', b.text);
-          transcript.append(node);
-        }
+        else addAssistant(b.text);
       } else if (b.type === 'tool_use') {
         addToolCard(b.id, b.name, b.input);
         const res = resultsById.get(b.id);
@@ -237,8 +272,11 @@ function renderHistory(messages) {
 
 /* ------------------------------ настройки -------------------------------- */
 
+let currentConfig = null;
+
 async function refreshConfig() {
   const cfg = await window.d3.getConfig();
+  currentConfig = cfg;
   $('model-badge').textContent = `${cfg.provider} · ${cfg.model}`;
   $('workdir-badge').textContent = cfg.workdir;
   $('workdir-badge').title = cfg.workdir;
@@ -295,9 +333,9 @@ window.d3.onEvent((ev) => {
   switch (ev.type) {
     case 'assistant_text': {
       const node = ensureAssistant();
-      node.textContent += ev.text;
+      rawText.set(node, (rawText.get(node) || '') + ev.text);
+      renderAssistant(node);
       setPhase(null); // текст виден сам, индикатор не нужен
-      scrollDown();
       break;
     }
     case 'assistant_reasoning': {
@@ -323,7 +361,9 @@ window.d3.onEvent((ev) => {
         .join('');
       if (text) {
         const node = ensureAssistant();
-        node.textContent = text;
+        rawText.set(node, text);
+        renderAssistant(node, true);
+        scrollDown();
       }
       endAssistant();
       break;
@@ -403,6 +443,22 @@ $('new-session').onclick = async () => {
   renderHistory([]);
   addInfo(`Новая сессия ${res.id}`);
   refreshSessions();
+};
+
+// Клик по названию модели: меню быстрых моделей без захода в настройки.
+$('model-badge').onclick = async () => {
+  const res = await window.d3.modelMenu();
+  if (res.error) addError(res.error);
+  if (res.openSettings) {
+    await refreshConfig();
+    $('settings').showModal();
+    $('s-model').focus();
+    return;
+  }
+  if (res.model) {
+    await refreshConfig();
+    addInfo(`Модель: ${res.model}`);
+  }
 };
 
 $('open-settings').onclick = async () => {

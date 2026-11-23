@@ -92,6 +92,12 @@ class Agent {
     this.messages = messages.slice();
   }
 
+  /** Сменить модель на лету: история и MCP остаются, промпт пересобирается. */
+  setModel(model) {
+    this.config = { ...this.config, model };
+    this.system = buildSystemPrompt(this.config);
+  }
+
   get history() {
     return this.messages;
   }

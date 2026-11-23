@@ -235,6 +235,50 @@ ipcMain.handle('config:set', async (_e, patch) => {
 
 ipcMain.handle('session:list', () => Session.list().map((s) => ({ ...s, current: s.id === session.id })));
 
+// Быстрые модели NVIDIA с вызовом инструментов (замер ноября 2026: ответ за 0,3–2,4 с).
+// Свой список можно задать в config.json полем "models": [...].
+const NVIDIA_FAST_MODELS = [
+  'nvidia/nemotron-3.5-super-vl-120b-a12b',
+  'nvidia/nemotron-3.5-lightning-30b-a3b',
+  'mistralai/mistral-large-4-1t-a52b',
+];
+
+function quickModels(cfg) {
+  const list = Array.isArray(cfg.models) && cfg.models.length ? cfg.models : /nvidia/i.test(cfg.baseUrl) ? NVIDIA_FAST_MODELS : [];
+  return [...new Set([cfg.model, ...list].filter((m) => typeof m === 'string' && m.trim()))];
+}
+
+// Клик по названию модели в шапке: быстрая смена без пересборки MCP.
+ipcMain.handle('model:menu', () => {
+  return new Promise((resolve) => {
+    let choice = null;
+    const template = quickModels(config).map((m) => ({
+      label: m,
+      type: 'radio',
+      checked: m === config.model,
+      click: () => (choice = { model: m }),
+    }));
+    template.push({ type: 'separator' }, { label: 'Другая модель… (Настройки)', click: () => (choice = { openSettings: true }) });
+    Menu.buildFromTemplate(template).popup({
+      window: win,
+      callback: () => {
+        if (!choice?.model || choice.model === config.model) return resolve(choice || {});
+        if (agent?.busy) return resolve({ error: 'Агент сейчас работает. Остановите его и смените модель.' });
+        config = saveConfig({ model: choice.model });
+        agent?.setModel(config.model);
+        resolve({ model: config.model });
+      },
+    });
+  });
+});
+
+// Ссылки из ответов модели открываются в браузере, а не в окне агента.
+ipcMain.handle('shell:open', async (_e, url) => {
+  if (typeof url !== 'string' || !/^(https?:|mailto:)/i.test(url)) return { ok: false };
+  await shell.openExternal(url);
+  return { ok: true };
+});
+
 /** Показать меню, вернуть выбранный пункт ('pin' | 'unpin' | 'delete') или null. */
 function popupMenu(items) {
   return new Promise((resolve) => {
