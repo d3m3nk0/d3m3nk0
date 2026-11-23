@@ -70,6 +70,21 @@ function truncate(text, max = MAX_OUTPUT) {
   return `${head}\n\n[...обрезано: показано ${max} из ${text.length} символов]`;
 }
 
+/**
+ * region у view_image: четыре числа в пикселях. Принимаем и float — модель
+ * иногда округляет не до целого; отрицательные и нулевые размеры отвергаем,
+ * иначе nativeImage молча вернёт пустое изображение.
+ */
+function parseRegion(region) {
+  if (!Array.isArray(region) || region.length !== 4 || !region.every((v) => Number.isFinite(Number(v)))) {
+    throw new Error('region — массив из четырёх чисел: [x, y, ширина, высота] в пикселях');
+  }
+  const [x, y, width, height] = region.map((v) => Math.round(Number(v)));
+  if (width <= 0 || height <= 0) throw new Error('region: ширина и высота должны быть больше нуля');
+  if (x < 0 || y < 0) throw new Error('region: x и y не могут быть отрицательными');
+  return { x, y, width, height };
+}
+
 function resolvePath(input, ctx) {
   const raw = input && input.path ? input.path : '.';
   const abs = path.isAbsolute(raw) ? path.normalize(raw) : path.resolve(ctx.workdir, raw);
@@ -411,10 +426,21 @@ const tools = [
     name: 'view_image',
     description:
       'Посмотреть картинку из рабочей папки (png, jpg, jpeg, gif, webp): модель увидит её содержимое. ' +
-      'Для схем и рисунков задач, фото, скриншотов. Не превращай картинку в base64 сам — вызывай этот инструмент.',
+      'Для схем и рисунков задач, фото, скриншотов. Не превращай картинку в base64 сам — вызывай этот инструмент. ' +
+      'Если нужен мелкий фрагмент (штамп, размер, подпись на чертеже), передай region [x, y, ширина, высота] в пикселях: ' +
+      'придёт только вырезанная часть, крупнее и читаемее. Обрезка доступна только в окне агента.',
     input_schema: {
       type: 'object',
-      properties: { path: { type: 'string', description: 'Путь к картинке (относительно рабочей папки)' } },
+      properties: {
+        path: { type: 'string', description: 'Путь к картинке (относительно рабочей папки)' },
+        region: {
+          type: 'array',
+          items: { type: 'number' },
+          minItems: 4,
+          maxItems: 4,
+          description: '[x, y, ширина, высота] в пикселях от левого верхнего угла; только в окне агента',
+        },
+      },
       required: ['path'],
     },
     async run(input, ctx) {
@@ -426,15 +452,31 @@ const tools = [
       if (!stat.isFile()) throw new Error(`Это не файл: ${abs}`);
       if (stat.size > IMAGE_MAX_READ) throw new Error(`Картинка слишком большая: ${Math.round(stat.size / 1048576)} МБ (предел ${IMAGE_MAX_READ / 1048576} МБ)`);
 
+      let region = null;
+      if (input.region !== undefined) {
+        region = parseRegion(input.region);
+        // nativeImage есть только в Electron: в CLI честно говорим, а не режем наугад.
+        if (!ctx.cropImage) {
+          throw new Error('Обрезка (region) доступна только в окне агента: в CLI нет графической библиотеки. Открой окно или посмотри картинку целиком.');
+        }
+      }
+
       let data = await fsp.readFile(abs);
       let type = mediaType;
       let note = '';
+      if (region) {
+        const cropped = await ctx.cropImage(data, region);
+        if (!cropped) throw new Error('Не удалось обрезать: файл не читается как картинка или region за пределами изображения.');
+        data = cropped.data;
+        type = cropped.mediaType || 'image/png';
+        note = `, обрезка ${cropped.width}×${cropped.height} (region ${region.x}, ${region.y}, ${region.width}, ${region.height})`;
+      }
       // В окне Electron большие картинки уменьшаются (nativeImage); в CLI — как есть.
       const resized = ctx.resizeImage ? await ctx.resizeImage(data, { maxSide: IMAGE_MAX_SIDE, maxBytes: IMAGE_SHRINK_BYTES }) : null;
       if (resized) {
         data = resized.data;
         type = resized.mediaType;
-        note = `, уменьшена до ${resized.width}×${resized.height}`;
+        note += `, уменьшена до ${resized.width}×${resized.height}`;
       }
       if (data.length > IMAGE_MAX_SEND) {
         throw new Error(
