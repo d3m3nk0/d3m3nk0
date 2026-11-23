@@ -810,6 +810,30 @@ async function main() {
   fs.writeFileSync(path.join(pdfDir, 'cours.pdf'), makePdf(Array.from({ length: 12 }, (_, i) => `Bonjour RDM page ${i + 1}`)));
   const pdfCtx = { workdir: pdfDir, allowOutside: false };
 
+  /* --------------------------------- edit_file --------------------------------- */
+
+  await check('edit_file: $& и $` в замене остаются текстом, пустой old_string отвергается', async () => {
+    const dir = path.join(TMP_ROOT, 'edit');
+    fs.mkdirSync(dir, { recursive: true });
+    const ctx = { workdir: dir, allowOutside: false };
+    const f = path.join(dir, 'price.js');
+    const oldText = 'const a = 1;\n';
+    // Такой текст встречается в коде про цены и замены; без защиты String.replace
+    // подставил бы вместо этих символов найденный фрагмент файла.
+    const newText = ['const msg = "цена: ', '$&', " $'", ' $`', '";', ''].join('');
+    fs.writeFileSync(f, oldText);
+    await rt('edit_file', { path: 'price.js', old_string: oldText, new_string: newText }, ctx);
+    assert.strictEqual(fs.readFileSync(f, 'utf8'), newText, 'символы $ в замене истолкованы как шаблон');
+
+    await assert.rejects(() => rt('edit_file', { path: 'price.js', old_string: '', new_string: 'x' }, ctx), /пуст/);
+    await assert.rejects(
+      () => rt('edit_file', { path: 'price.js', old_string: '', new_string: 'x', replace_all: true }, ctx),
+      /пуст/,
+      'пустой old_string с replace_all разрезал бы файл по буквам'
+    );
+    assert.strictEqual(fs.readFileSync(f, 'utf8'), newText, 'файл испорчен неудачными вызовами');
+  });
+
   await check('read_pdf: выбранные страницы, подписи, подсказка «дальше»', async () => {
     const out = await rt('read_pdf', { path: 'cours.pdf', pages: '2, 4-5' }, pdfCtx);
     assert.ok(/12 стр\. Показаны страницы 2, 4–5/.test(out), out.slice(0, 120));

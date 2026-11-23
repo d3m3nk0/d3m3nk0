@@ -301,7 +301,7 @@ API-ключ и сеть не нужны ни одному набору.
 ```powershell
 npm test                  # test/smoke.js — встроенные инструменты, 13 проверок
 npm run test:mcp          # test/mcp-smoke.js — подключение MCP по конфигу из README
-npm run test:regression   # test/regression.js — стриминг, прерывания, сжатие, 61 проверка
+npm run test:regression   # test/regression.js — стриминг, прерывания, сжатие, 62 проверки
 ```
 
 - **`npm test`** — инструменты `read_file`, `write_file`, `edit_file`,

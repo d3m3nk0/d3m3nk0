@@ -196,15 +196,21 @@ const tools = [
     },
     async run(input, ctx) {
       const file = resolvePath(input, ctx);
+      // Пустой old_string «находится» везде: с replace_all он разрезал бы файл
+      // по каждой букве, поэтому такой вызов отвергаем сразу.
+      if (!String(input.old_string ?? '')) throw new Error('old_string пуст — нечего заменять');
       const text = await fsp.readFile(file, 'utf8');
       const count = text.split(input.old_string).length - 1;
       if (count === 0) throw new Error('old_string не найден в файле');
       if (count > 1 && !input.replace_all) {
         throw new Error(`old_string встречается ${count} раз; уточни фрагмент или включи replace_all`);
       }
+      // Замена функцией, а не строкой: в new_string символы $& $` $' $1 — это
+      // шаблоны String.replace, и код вроде "цена: $&" молча превратился бы
+      // в копию old_string.
       const next = input.replace_all
         ? text.split(input.old_string).join(input.new_string)
-        : text.replace(input.old_string, input.new_string);
+        : text.replace(input.old_string, () => input.new_string);
       await fsp.writeFile(file, next, 'utf8');
       return `Изменён ${file}: заменено ${input.replace_all ? count : 1} вхождений`;
     },
