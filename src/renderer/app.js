@@ -490,6 +490,69 @@ $('save-settings').onclick = async (e) => {
   addInfo('Настройки сохранены');
 };
 
+/* ------------------------- ширина боковой панели ------------------------- */
+
+// Полосу между списком сессий и чатом можно тянуть мышью или стрелками
+// (когда она в фокусе). Ширина запоминается, двойной клик возвращает исходную.
+const SIDEBAR = { def: 240, min: 170, maxShare: 0.45, key: 'd3m3nk0.sidebarWidth' };
+const resizer = $('sidebar-resizer');
+
+function clampSidebar(px) {
+  const max = Math.max(SIDEBAR.min, Math.floor(window.innerWidth * SIDEBAR.maxShare));
+  return Math.round(Math.min(Math.max(px, SIDEBAR.min), max));
+}
+
+function setSidebarWidth(px, save = true) {
+  const w = clampSidebar(px);
+  document.body.style.setProperty('--sidebar-w', `${w}px`);
+  resizer.setAttribute('aria-valuenow', String(w));
+  if (save) localStorage.setItem(SIDEBAR.key, String(w));
+  return w;
+}
+
+function sidebarWidth() {
+  return $('sidebar').getBoundingClientRect().width;
+}
+
+resizer.addEventListener('pointerdown', (e) => {
+  if (e.button !== 0) return;
+  e.preventDefault();
+  const startX = e.clientX;
+  const startW = sidebarWidth();
+  document.body.classList.add('resizing');
+  // Слушаем весь документ, а не полосу в 8 px: при быстром рывке мышь
+  // уходит с полосы, и события до неё уже не доходят.
+  const move = (ev) => setSidebarWidth(startW + ev.clientX - startX, false);
+  const up = () => {
+    document.removeEventListener('pointermove', move);
+    document.removeEventListener('pointerup', up);
+    window.removeEventListener('blur', up);
+    document.body.classList.remove('resizing');
+    setSidebarWidth(sidebarWidth()); // сохранить итог один раз, а не на каждый пиксель
+  };
+  document.addEventListener('pointermove', move);
+  document.addEventListener('pointerup', up);
+  window.addEventListener('blur', up); // отпустили кнопку за пределами окна
+});
+
+resizer.addEventListener('dblclick', () => setSidebarWidth(SIDEBAR.def));
+
+resizer.addEventListener('keydown', (e) => {
+  const step = e.shiftKey ? 40 : 10;
+  if (e.key === 'ArrowLeft') setSidebarWidth(sidebarWidth() - step);
+  else if (e.key === 'ArrowRight') setSidebarWidth(sidebarWidth() + step);
+  else if (e.key === 'Home' || e.key === 'Enter') setSidebarWidth(SIDEBAR.def);
+  else return;
+  e.preventDefault();
+});
+
+const savedSidebar = () => Number(localStorage.getItem(SIDEBAR.key)) || SIDEBAR.def;
+
+// Окно сузили — панель не больше своей доли; расширили — снова сохранённая ширина.
+window.addEventListener('resize', () => setSidebarWidth(savedSidebar(), false));
+
+setSidebarWidth(savedSidebar(), false);
+
 /* --------------------------------- старт --------------------------------- */
 
 (async function init() {

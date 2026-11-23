@@ -23,13 +23,17 @@ html, body {
 
 body {
   display: grid;
-  grid-template-columns: 240px 1fr;
+  /* Ширину боковой панели задаёт app.js (перетаскивание полосы), minmax(0,…) не
+     даёт длинному содержимому распереть колонку чата. */
+  grid-template-columns: var(--sidebar-w, 240px) minmax(0, 1fr);
   overflow: hidden;
 }
+body.resizing { cursor: col-resize; user-select: none; }
 
 /* ------------------------------- sidebar -------------------------------- */
 
 #sidebar {
+  position: relative;
   background: var(--panel);
   border-right: 1px solid var(--line);
   display: flex;
@@ -37,7 +41,33 @@ body {
   padding: 14px 12px;
   gap: 10px;
   min-height: 0;
+  min-width: 0;
 }
+
+/* Полоса между панелью и чатом: широкая невидимая зона захвата, тонкая линия при наведении. */
+#sidebar-resizer {
+  position: absolute;
+  top: 0;
+  bottom: 0;
+  right: -4px;
+  width: 8px;
+  cursor: col-resize;
+  z-index: 5;
+  outline: none;
+}
+#sidebar-resizer::after {
+  content: '';
+  position: absolute;
+  top: 0;
+  bottom: 0;
+  left: 3px;
+  width: 2px;
+  background: transparent;
+  transition: background 0.15s;
+}
+#sidebar-resizer:hover::after,
+#sidebar-resizer:focus-visible::after,
+body.resizing #sidebar-resizer::after { background: var(--accent); }
 
 .brand {
   font-weight: 700;
