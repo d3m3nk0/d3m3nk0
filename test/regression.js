@@ -1007,6 +1007,75 @@ async function main() {
     await assert.rejects(() => runTool('view_image', { path: path.join(TMP_ROOT, 'x.png') }, picCtx), /вне рабочей папки/);
   });
 
+  const { parseRegion, cropPlan } = require('../src/core/tools');
+
+  await check('region: верный разбирается (дробные округляются), неверный — понятная ошибка', () => {
+    assert.deepStrictEqual(parseRegion([10.4, 0, 99.6, 20]), { x: 10, y: 0, width: 100, height: 20 });
+    assert.deepStrictEqual(parseRegion(['5', '6', '7', '8']), { x: 5, y: 6, width: 7, height: 8 }, 'числа строкой');
+    const bad = [
+      [undefined, /массив из четырёх чисел/],
+      ['10,10,50,50', /массив из четырёх чисел/],
+      [[10, 10, 50], /массив из четырёх чисел/],
+      [[10, 10, 50, 50, 1], /массив из четырёх чисел/],
+      [[0, 0, 'abc', 10], /массив из четырёх чисел/],
+      [[0, 0, NaN, 10], /массив из четырёх чисел/],
+      [[0, 0, Infinity, 10], /массив из четырёх чисел/],
+      [[0, 0, 0, 10], /больше нуля/],
+      [[0, 0, 10, -5], /больше нуля/],
+      [[-1, 0, 10, 10], /отрицательными/],
+      [[0, -0.6, 10, 10], /отрицательными/],
+    ];
+    for (const [region, msg] of bad) assert.throws(() => parseRegion(region), msg, `пропущен неверный region ${JSON.stringify(region)}`);
+  });
+
+  await check('region: план обрезки — внутри, частично за краем, за краем, увеличение', () => {
+    const inside = cropPlan({ x: 20, y: 0, width: 20, height: 30 }, { width: 40, height: 30 });
+    assert.deepStrictEqual(inside.rect, { x: 20, y: 0, width: 20, height: 30 });
+    assert.strictEqual(inside.clamped, false);
+    assert.strictEqual(inside.scale, 3, 'мелкий фрагмент не увеличен в 3 раза');
+    assert.deepStrictEqual([inside.outWidth, inside.outHeight], [60, 90]);
+
+    const edge = cropPlan({ x: 30, y: 20, width: 100, height: 100 }, { width: 40, height: 30 });
+    assert.deepStrictEqual(edge.rect, { x: 30, y: 20, width: 10, height: 10 }, 'не обрезан по краю');
+    assert.strictEqual(edge.clamped, true);
+
+    assert.throws(() => cropPlan({ x: 40, y: 0, width: 5, height: 5 }, { width: 40, height: 30 }), /за краем картинки: она 40×30 px/);
+    assert.throws(() => cropPlan({ x: 0, y: 30, width: 5, height: 5 }, { width: 40, height: 30 }), /y от 0 до 29/);
+
+    const big = cropPlan({ x: 0, y: 0, width: 1200, height: 900 }, { width: 2479, height: 3508 });
+    assert.strictEqual(big.scale, 1, 'крупный фрагмент увеличен');
+    const mid = cropPlan({ x: 0, y: 0, width: 400, height: 100 }, { width: 2479, height: 3508 });
+    assert.deepStrictEqual([mid.scale, mid.outWidth, mid.outHeight], [2, 800, 200], 'до 800 px по длинной стороне');
+  });
+
+  await check('view_image + region: в CLI «только в окне», неверный region — ошибка формата раньше', async () => {
+    await assert.rejects(() => runTool('view_image', { path: 'pic.png', region: [0, 0, 1, 1] }, picCtx), /только в окне агента/);
+    await assert.rejects(() => runTool('view_image', { path: 'pic.png', region: [0, 0, 1] }, picCtx), /массив из четырёх чисел/);
+    let called = false;
+    const cropImage = async () => {
+      called = true;
+      return null;
+    };
+    await assert.rejects(() => runTool('view_image', { path: 'pic.png', region: [0, 0, -1, 1] }, { ...picCtx, cropImage }), /больше нуля/);
+    assert.strictEqual(called, false, 'неверный region дошёл до обрезки');
+    await assert.rejects(() => runTool('view_image', { path: 'pic.png', region: [0, 0, 1, 1] }, { ...picCtx, cropImage }), /не читается как картинка/);
+  });
+
+  await check('view_image + region: в окне обрезка вызвана с разобранным region, подпись честная', async () => {
+    let got = null;
+    const cropImage = async (buf, region) => {
+      got = region;
+      return { data: Buffer.from('cropped'), mediaType: 'image/png', width: 60, height: 90, rect: { x: 20, y: 0, width: 20, height: 30 }, clamped: true, scale: 3, imageWidth: 40, imageHeight: 30 };
+    };
+    const out = await runTool('view_image', { path: 'pic.png', region: [20.2, 0, 20, 30] }, { ...picCtx, cropImage });
+    assert.deepStrictEqual(got, { x: 20, y: 0, width: 20, height: 30 });
+    assert.strictEqual(out.image.data, Buffer.from('cropped').toString('base64'));
+    assert.ok(/фрагмент x=20, y=0, 20×30 из картинки 40×30/.test(out.text), out.text);
+    assert.ok(/обрезан по краю/.test(out.text) && /увеличен до 60×90/.test(out.text), out.text);
+    const schema = require('../src/core/tools').tools.find((t) => t.name === 'view_image');
+    assert.ok(/только в окне/.test(schema.description) && schema.input_schema.properties.region, 'нет пометки или параметра region');
+  });
+
   await check('view_image: в окне большие картинки уменьшаются через resizeImage', async () => {
     let asked = null;
     const resizeImage = async (buf, opts) => {

@@ -85,6 +85,42 @@ function parseRegion(region) {
   return { x, y, width, height };
 }
 
+// Мелкий фрагмент (штамп, подпись размера) увеличиваем, чтобы модели хватило
+// пикселей на буквы: до CROP_UPSCALE_TARGET по длинной стороне, не больше чем в
+// CROP_UPSCALE_MAX раз (сильнее — только размытое пятно, новых деталей не будет).
+const CROP_UPSCALE_TARGET = 800;
+const CROP_UPSCALE_MAX = 3;
+
+/**
+ * План обрезки по реальному размеру картинки (геометрия — в ядре, чтобы её можно
+ * было проверить без окна; nativeImage в main.js только режет и масштабирует).
+ *  - region начинается за краем → ошибка с настоящим размером, модель поправит запрос;
+ *  - region выходит за край частично → обрезаем по краю, clamped: true;
+ *  - маленький фрагмент → scale > 1 и размер на выходе outWidth × outHeight.
+ */
+function cropPlan(region, { width, height }) {
+  if (!(width > 0 && height > 0)) throw new Error('Не удалось прочитать размер картинки');
+  if (region.x >= width || region.y >= height) {
+    throw new Error(
+      `region начинается за краем картинки: она ${width}×${height} px, а x=${region.x}, y=${region.y}. ` +
+        `Допустимо x от 0 до ${width - 1}, y от 0 до ${height - 1}.`,
+    );
+  }
+  const w = Math.min(region.width, width - region.x);
+  const h = Math.min(region.height, height - region.y);
+  const long = Math.max(w, h);
+  const scale = long < CROP_UPSCALE_TARGET ? Math.min(CROP_UPSCALE_MAX, CROP_UPSCALE_TARGET / long) : 1;
+  return {
+    rect: { x: region.x, y: region.y, width: w, height: h },
+    clamped: w !== region.width || h !== region.height,
+    scale,
+    outWidth: Math.max(1, Math.round(w * scale)),
+    outHeight: Math.max(1, Math.round(h * scale)),
+    imageWidth: width,
+    imageHeight: height,
+  };
+}
+
 function resolvePath(input, ctx) {
   const raw = input && input.path ? input.path : '.';
   const abs = path.isAbsolute(raw) ? path.normalize(raw) : path.resolve(ctx.workdir, raw);
@@ -465,11 +501,16 @@ const tools = [
       let type = mediaType;
       let note = '';
       if (region) {
+        // cropImage (main.js) считает план через cropPlan: за краем — бросает ошибку с размером.
         const cropped = await ctx.cropImage(data, region);
-        if (!cropped) throw new Error('Не удалось обрезать: файл не читается как картинка или region за пределами изображения.');
+        if (!cropped) throw new Error('Не удалось обрезать: файл не читается как картинка.');
         data = cropped.data;
         type = cropped.mediaType || 'image/png';
-        note = `, обрезка ${cropped.width}×${cropped.height} (region ${region.x}, ${region.y}, ${region.width}, ${region.height})`;
+        const r = cropped.rect || region;
+        note =
+          `, фрагмент x=${r.x}, y=${r.y}, ${r.width}×${r.height} из картинки ${cropped.imageWidth}×${cropped.imageHeight}` +
+          (cropped.clamped ? ' (region выходил за край — обрезан по краю)' : '') +
+          (cropped.scale > 1 ? `, увеличен до ${cropped.width}×${cropped.height}` : '');
       }
       // В окне Electron большие картинки уменьшаются (nativeImage); в CLI — как есть.
       const resized = ctx.resizeImage ? await ctx.resizeImage(data, { maxSide: IMAGE_MAX_SIDE, maxBytes: IMAGE_SHRINK_BYTES }) : null;
@@ -513,4 +554,4 @@ async function runTool(name, input, ctx, extra = []) {
   return await tool.run(input, ctx);
 }
 
-module.exports = { tools, toolSchemas, runTool, resolvePath, truncate, parsePages, MAX_OUTPUT, IMAGE_MAX_SEND, IMAGE_MAX_SIDE, PDF_MAX_PAGES };
+module.exports = { tools, toolSchemas, runTool, resolvePath, truncate, parsePages, parseRegion, cropPlan, MAX_OUTPUT, IMAGE_MAX_SEND, IMAGE_MAX_SIDE, PDF_MAX_PAGES, CROP_UPSCALE_TARGET, CROP_UPSCALE_MAX };

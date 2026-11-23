@@ -153,10 +153,11 @@ function needsApproval(mode, toolName, input, rules) {
 }
 
 class Agent {
-  constructor({ config, session, mcp, emit, askPermission, imageResizer, onConfigChange }) {
+  constructor({ config, session, mcp, emit, askPermission, imageResizer, imageCropper, onConfigChange }) {
     this.onConfigChange = onConfigChange || (() => {}); // сохранить правку настроек (окно — в config.json)
     this.config = config;
     this.imageResizer = imageResizer || null; // в окне — уменьшение картинок через nativeImage
+    this.imageCropper = imageCropper || null; // в окне — обрезка view_image (region); в CLI нет
     this.session = session;
     this.mcp = mcp;
     this.emit = emit || (() => {});
@@ -332,6 +333,7 @@ class Agent {
               allowOutside: this.config.permissionMode === 'yolo',
               signal: sig,
               resizeImage: this.imageResizer,
+              cropImage: this.imageCropper,
             };
             output = call.name.startsWith('mcp__')
               ? await this.mcp.call(call.name, call.input)

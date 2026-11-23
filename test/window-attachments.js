@@ -35,7 +35,9 @@ const CHECK_TIMEOUT_MS = 90000; // дольше — что-то зависло, 
  * Настоящий PNG без зависимостей: сигнатура, IHDR, IDAT (zlib), IEND.
  * Нужен именно корректный файл — nativeImage иначе не построит превью.
  */
-function pngBytes(width, height, [r, g, b]) {
+function pngBytes(width, height, rgb) {
+  // rgb — [r, g, b] на всю картинку или функция (x, y) => [r, g, b].
+  const colorAt = typeof rgb === 'function' ? rgb : () => rgb;
   const crcTable = Array.from({ length: 256 }, (_, n) => {
     let c = n;
     for (let k = 0; k < 8; k++) c = c & 1 ? 0xedb88320 ^ (c >>> 1) : c >>> 1;
@@ -64,6 +66,7 @@ function pngBytes(width, height, [r, g, b]) {
   for (let y = 0; y < height; y++) {
     for (let x = 0; x < width; x++) {
       const i = y * (width * 3 + 1) + 1 + x * 3;
+      const [r, g, b] = colorAt(x, y);
       raw[i] = r;
       raw[i + 1] = g;
       raw[i + 2] = b;
@@ -338,6 +341,70 @@ async function main() {
           'строки расхода нет под ответом'
         );
         assert.match(res.meta, /токены: ↑ 1\s200 · ↓ 34 · кэш 900/, `строка расхода: «${res.meta}»`);
+      } finally {
+        await fake.close();
+      }
+    });
+
+    // Кроп view_image — настоящий nativeImage в главном процессе: картинка 40×30,
+    // левая половина красная, правая синяя; модель просит правую половину.
+    await check('view_image region: nativeImage вырезает фрагмент, увеличивает, за краем — ошибка', async () => {
+      fs.writeFileSync(path.join(WORK, 'crop.png'), pngBytes(40, 30, (x) => (x < 20 ? [220, 0, 0] : [0, 0, 220])));
+      const { startFakeLlm } = require('./helpers/fake-llm');
+      const fake = await startFakeLlm({ chunkDelayMs: 20 });
+      try {
+        const switched = await evaluate(`window.d3.setConfig({ baseUrl: ${JSON.stringify(fake.url('stream'))}, model: 'model-ok' })`);
+        assert.ok(switched && switched.ok, `окно не переключилось: ${JSON.stringify(switched)}`);
+        await sleep(700);
+
+        const ask = async (text) => {
+          const before = await evaluate(`document.querySelectorAll('#transcript .tool').length`);
+          await evaluate(`document.getElementById('input').value = ${JSON.stringify(text)}; document.getElementById('send').click();`);
+          for (let i = 0; i < 40; i++) {
+            await sleep(250);
+            const st = await evaluate(`({ n: document.querySelectorAll('#transcript .tool').length, busy: document.getElementById('send').disabled })`);
+            if (st.n > before && !st.busy) break;
+          }
+        };
+
+        // 1) Правая половина: 20×30 → увеличение ×3 → 60×90, и в ней только синий.
+        await ask('обрежь картинку');
+        const res = await evaluate(`(async () => {
+          const card = [...document.querySelectorAll('#transcript .tool')].pop();
+          const img = card && card.querySelector('.tool-image');
+          if (!img) return { status: card ? card.querySelector('.tool-status').textContent : 'нет карточки', out: card ? card.querySelector('.tool-output').textContent : '' };
+          if (!img.complete) await new Promise((r) => (img.onload = r));
+          const c = document.createElement('canvas');
+          c.width = img.naturalWidth;
+          c.height = img.naturalHeight;
+          const g = c.getContext('2d');
+          g.drawImage(img, 0, 0);
+          const px = (x, y) => [...g.getImageData(x, y, 1, 1).data.slice(0, 3)];
+          return {
+            status: card.querySelector('.tool-status').textContent,
+            out: card.querySelector('.tool-output').textContent,
+            w: img.naturalWidth,
+            h: img.naturalHeight,
+            corners: [px(1, 1), px(img.naturalWidth - 2, 1), px(1, img.naturalHeight - 2), px(img.naturalWidth - 2, img.naturalHeight - 2)],
+          };
+        })()`);
+        assert.strictEqual(res.status, 'готово', `инструмент: ${res.status} — ${res.out}`);
+        assert.deepStrictEqual([res.w, res.h], [60, 90], 'размер вырезки не 60×90');
+        for (const [r, g, b] of res.corners) assert.ok(b > 150 && r < 60 && g < 60, `в вырезке не только синий: ${JSON.stringify(res.corners)}`);
+        assert.ok(/фрагмент x=20, y=0, 20×30 из картинки 40×30/.test(res.out) && /увеличен до 60×90/.test(res.out), res.out);
+        const sent = fake.requests.find((r) => r.images.length);
+        assert.ok(sent, 'модели картинка не ушла');
+        const png = Buffer.from(sent.images[0].split(',')[1], 'base64');
+        assert.deepStrictEqual([png.readUInt32BE(16), png.readUInt32BE(20)], [60, 90], 'модели ушла не вырезка');
+
+        // 2) Region за краем: ошибка инструмента с настоящим размером картинки.
+        await ask('обрежь за краем');
+        const bad = await evaluate(`(() => {
+          const card = [...document.querySelectorAll('#transcript .tool')].pop();
+          return { status: card.querySelector('.tool-status').textContent, out: card.querySelector('.tool-output').textContent };
+        })()`);
+        assert.strictEqual(bad.status, 'ошибка', `region за краем не дал ошибку: ${bad.out}`);
+        assert.ok(/она 40×30 px/.test(bad.out), bad.out);
       } finally {
         await fake.close();
       }

@@ -17,6 +17,7 @@ const { McpManager, describePlugins } = require('../core/mcp');
 const { Agent } = require('../core/agent');
 const { NVIDIA_FAST_MODELS } = require('../core/resilience');
 const attachments = require('../core/attachments');
+const { cropPlan } = require('../core/tools');
 
 // Режим скриншота: GPU-композитинг в удалённой сессии не отдаёт кадр
 // (capturePage падает с UnknownVizError), поэтому рисуем программно.
@@ -48,6 +49,22 @@ function resizeImage(buf, { maxSide, maxBytes }) {
   const png = small.toPNG();
   if (png.length <= maxBytes) return { data: png, mediaType: 'image/png', width: w, height: h };
   return { data: small.toJPEG(85), mediaType: 'image/jpeg', width: w, height: h };
+}
+
+/**
+ * Обрезать картинку для view_image с region (только окно: nativeImage — часть Electron).
+ * Геометрию (границы, увеличение) считает cropPlan из ядра; за краем — ошибка с размером.
+ * null — Electron не прочитал файл как картинку.
+ */
+function cropImage(buf, region) {
+  const img = nativeImage.createFromBuffer(buf);
+  if (img.isEmpty()) return null;
+  const plan = cropPlan(region, img.getSize());
+  let part = img.crop(plan.rect);
+  if (plan.scale > 1) part = part.resize({ width: plan.outWidth, height: plan.outHeight, quality: 'best' });
+  const { width, height } = part.getSize();
+  // PNG: на чертежах и схемах тонкие линии и мелкий текст — JPEG их размывает.
+  return { data: part.toPNG(), mediaType: 'image/png', width, height, rect: plan.rect, clamped: plan.clamped, scale: plan.scale, imageWidth: plan.imageWidth, imageHeight: plan.imageHeight };
 }
 
 function emit(event) {
@@ -112,7 +129,7 @@ async function doBuildAgent({ history = [] } = {}) {
     });
   }
   agent = new Agent({
-    config, session, mcp, emit, askPermission, imageResizer: resizeImage,
+    config, session, mcp, emit, askPermission, imageResizer: resizeImage, imageCropper: cropImage,
     onConfigChange: (patch) => {
       config = saveConfig(patch);
     },

@@ -155,6 +155,15 @@ function startFakeLlm(opts = {}) {
       res.write(delta(AFTER_TOOL_TEXT));
       return done();
     }
+    // «обрежь» — view_image с region: правая половина crop.png 40×30;
+    // «обрежь за краем» — region за пределами картинки (ожидается ошибка).
+    if (/обрежь/.test(text)) {
+      const region = /за краем/.test(text) ? [500, 500, 10, 10] : [20, 0, 20, 30];
+      const fn = { name: 'view_image', arguments: JSON.stringify({ path: 'crop.png', region }) };
+      res.write(sse({ choices: [{ index: 0, delta: { tool_calls: [{ index: 0, id: 'call_crop', type: 'function', function: fn }] } }] }));
+      res.write(sse({ choices: [{ index: 0, delta: {}, finish_reason: 'tool_calls' }] }));
+      return done();
+    }
     if (/посмотри/.test(text)) {
       res.write(sse({ choices: [{ index: 0, delta: { tool_calls: [{ index: 0, id: 'call_view', type: 'function', function: VIEW_CALL }] } }] }));
       res.write(sse({ choices: [{ index: 0, delta: {}, finish_reason: 'tool_calls' }] }));
