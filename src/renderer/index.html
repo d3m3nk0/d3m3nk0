@@ -5,6 +5,7 @@
     <meta http-equiv="Content-Security-Policy" content="default-src 'self'; style-src 'self' 'unsafe-inline'; script-src 'self'" />
     <title>d3m3nk0</title>
     <link rel="stylesheet" href="style.css" />
+    <script src="look.js"></script>
   </head>
   <body>
     <aside id="sidebar">
@@ -115,23 +116,32 @@
 
             <section data-pane="appearance" hidden>
               <h3>Внешний вид</h3>
-              <label>Размер текста
-                <select id="s-font">
-                  <option value="13">Мелкий</option>
-                  <option value="14">Обычный</option>
-                  <option value="15.5">Крупный</option>
-                  <option value="17">Очень крупный</option>
-                </select>
-              </label>
-              <label>Ширина колонки чата
-                <select id="s-col">
-                  <option value="720">Узкая</option>
-                  <option value="820">Обычная</option>
-                  <option value="1000">Широкая</option>
-                  <option value="100%">Во всю ширину</option>
-                </select>
-              </label>
-              <p class="pane-note">Внешний вид меняется сразу и запоминается на этом компьютере.</p>
+              <div class="look-rows">
+                <div class="look-row">
+                  <div><div class="lr-title">Тема</div><div class="pane-note">«Как в Windows» переключается вместе с системой.</div></div>
+                  <div id="look-theme" class="seg" role="radiogroup" aria-label="Тема"></div>
+                </div>
+                <div class="look-row">
+                  <div><div class="lr-title">Цвет акцента</div><div class="pane-note">Кнопки, ссылки, переключатели, пузыри сообщений.</div></div>
+                  <div id="look-accent" class="swatches" role="radiogroup" aria-label="Цвет акцента"></div>
+                </div>
+                <div class="look-row"><div class="lr-title">Шрифт интерфейса</div><select id="look-fontUi"></select></div>
+                <div class="look-row"><div class="lr-title">Шрифт ответов</div><select id="look-fontAnswer"></select></div>
+                <div class="look-row"><div class="lr-title">Размер текста</div><select id="look-fontSize"></select></div>
+                <div class="look-row"><div class="lr-title">Ширина чата</div><select id="look-col"></select></div>
+              </div>
+
+              <h3 class="look-sub">Код</h3>
+              <div class="look-rows">
+                <div class="look-row"><div class="lr-title">Шрифт кода</div><select id="look-fontCode"></select></div>
+                <div class="look-row"><div class="lr-title">Цветовая схема</div><select id="look-code"></select></div>
+              </div>
+              <div id="look-preview" class="msg assistant md look-preview"></div>
+
+              <div class="look-foot">
+                <span class="pane-note">Применяется сразу и запоминается на этом компьютере.</span>
+                <button type="button" id="look-reset" class="ghost">Сбросить</button>
+              </div>
             </section>
 
             <section data-pane="plugins" hidden>

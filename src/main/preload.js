@@ -18,6 +18,7 @@ contextBridge.exposeInMainWorld('d3', {
   abort: () => ipcRenderer.invoke('agent:abort'),
   mcpStatus: () => ipcRenderer.invoke('mcp:status'),
   plugins: () => ipcRenderer.invoke('mcp:plugins'),
+  setTheme: (theme) => ipcRenderer.invoke('theme:set', theme),
   replyPermission: (id, approved) => ipcRenderer.send('permission:reply', { id, approved }),
   onEvent: (cb) => ipcRenderer.on('agent:event', (_e, ev) => cb(ev)),
   onPermission: (cb) => ipcRenderer.on('permission:request', (_e, req) => cb(req)),

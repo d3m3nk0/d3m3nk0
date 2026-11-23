@@ -7,7 +7,7 @@
  * Это принципиально: у рендерера нет доступа к файловой системе и процессам.
  */
 
-const { app, BrowserWindow, ipcMain, Menu, dialog, shell } = require('electron');
+const { app, BrowserWindow, ipcMain, Menu, dialog, shell, nativeTheme } = require('electron');
 const fs = require('node:fs');
 const os = require('node:os');
 const path = require('node:path');
@@ -95,13 +95,18 @@ async function doBuildAgent({ history = [] } = {}) {
   return agent;
 }
 
+// Тема окна Windows (рамка, меню, фон до загрузки) — последняя выбранная во «Внешнем виде».
+const THEMES = new Set(['system', 'light', 'dark']);
+nativeTheme.themeSource = THEMES.has(config.uiTheme) ? config.uiTheme : 'system';
+const windowBg = () => (nativeTheme.shouldUseDarkColors ? '#12141a' : '#f7f7f5');
+
 function createWindow() {
   win = new BrowserWindow({
     width: 1280,
     height: 860,
     minWidth: 900,
     minHeight: 600,
-    backgroundColor: '#12141a',
+    backgroundColor: windowBg(),
     title: 'd3m3nk0',
     webPreferences: {
       preload: path.join(__dirname, 'preload.js'),
@@ -406,6 +411,15 @@ ipcMain.handle('agent:abort', () => {
 });
 
 ipcMain.handle('mcp:status', () => mcp.status);
+
+// «Внешний вид» → тема Windows для рамки и меню; запоминается для следующего запуска.
+ipcMain.handle('theme:set', (_e, theme) => {
+  if (!THEMES.has(theme)) return { ok: false };
+  nativeTheme.themeSource = theme;
+  if (win && !win.isDestroyed()) win.setBackgroundColor(windowBg());
+  if (config.uiTheme !== theme) config = saveConfig({ uiTheme: theme });
+  return { ok: true };
+});
 ipcMain.handle('mcp:plugins', () => describePlugins(config.mcpServers, mcpReport));
 
 ipcMain.on('permission:reply', (_e, { id, approved }) => {

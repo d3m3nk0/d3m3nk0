@@ -15,6 +15,61 @@
 
 const SAFE_URL = /^(https?:|mailto:)/i;
 
+/* ------------------------------ подсветка кода ------------------------------ */
+
+// Простая подсветка без внешних библиотек: строки, комментарии, числа,
+// ключевые слова, вызовы функций и $переменные. Возвращает куски текста с
+// типом; склеенные обратно, они дают ровно исходный код (это проверяет тест).
+
+const NO_HIGHLIGHT = new Set(['', 'text', 'txt', 'plain', 'plaintext', 'md', 'markdown', 'log', 'output', 'код']);
+const HASH_COMMENTS = new Set(['py', 'python', 'sh', 'bash', 'shell', 'zsh', 'ps', 'ps1', 'powershell', 'pwsh', 'yaml', 'yml', 'toml', 'rb', 'ruby', 'r', 'dockerfile', 'ini', 'conf']);
+const KEYWORDS = new Set(
+  ('const let var function return if else elif for while do break continue class new import from export default ' +
+    'try catch finally throw async await def lambda in of is not and or None True False null true false undefined ' +
+    'this self print echo param foreach switch case public private protected static void int string bool float ' +
+    'double struct enum interface type extends implements yield with as pass raise except global fn mut use pub ' +
+    'impl match where select begin end then local require module exports package go func defer range map')
+    .split(' '),
+);
+
+function highlightCode(code, lang) {
+  const text = String(code ?? '');
+  const l = String(lang || '').toLowerCase();
+  if (NO_HIGHLIGHT.has(l)) return [{ t: null, v: text }];
+  const isJson = l === 'json' || l === 'jsonc';
+  const hash = HASH_COMMENTS.has(l);
+  const out = [];
+  const push = (t, v) => {
+    if (!v) return;
+    const last = out[out.length - 1];
+    if (last && last.t === t) last.v += v;
+    else out.push({ t, v });
+  };
+  let i = 0;
+  while (i < text.length) {
+    const rest = text.slice(i);
+    let m;
+    if ((m = rest.match(/^\/\*[\s\S]*?(\*\/|$)/)) || (m = rest.match(/^<!--[\s\S]*?(-->|$)/))) push('com', m[0]);
+    else if ((m = rest.match(/^\/\/[^\n]*/)) && !isJson) push('com', m[0]);
+    else if (hash && (m = rest.match(/^#[^\n]*/))) push('com', m[0]);
+    else if ((m = rest.match(/^("""|''')[\s\S]*?(\1|$)/))) push('str', m[0]);
+    else if ((m = rest.match(/^"(?:[^"\\\n]|\\.)*"?/)) || (m = rest.match(/^'(?:[^'\\\n]|\\.)*'?/)) || (m = rest.match(/^`(?:[^`\\]|\\.)*`?/))) push('str', m[0]);
+    else if ((m = rest.match(/^(0x[0-9a-fA-F]+|\d+(?:[.,]\d+)?(?:e[+-]?\d+)?)\b/)) && !/[\w$]$/.test(text.slice(0, i))) push('num', m[0]);
+    else if ((m = rest.match(/^\$[A-Za-z_][\w:]*/))) push('fn', m[0]);
+    else if ((m = rest.match(/^[A-Za-z_][\w-]*/u))) {
+      const word = m[0].includes('-') && !/^[A-Z][a-z]+-[A-Z]/.test(m[0]) ? m[0].match(/^[A-Za-z_]\w*/)[0] : m[0];
+      const after = text.slice(i + word.length);
+      if (isJson ? /^(true|false|null)$/.test(word) : KEYWORDS.has(word)) push('kw', word);
+      else if (/^\s*\(/.test(after) || /^[A-Z][a-z]+-[A-Z]\w*$/.test(word)) push('fn', word); // вызов или Командлет-PowerShell
+      else push(null, word);
+      i += word.length;
+      continue;
+    } else push(null, text[i]);
+    i += m ? m[0].length : 1;
+  }
+  return out;
+}
+
 /* --------------------------------- разбор строки -------------------------------- */
 
 function parseInline(text) {
@@ -286,7 +341,15 @@ function buildBlocks(blocks, parent, hooks) {
       head.append(lang, copy);
       const pre = document.createElement('pre');
       const code = document.createElement('code');
-      code.textContent = b.text;
+      for (const tk of highlightCode(b.text, b.lang)) {
+        if (!tk.t) code.append(document.createTextNode(tk.v));
+        else {
+          const span = document.createElement('span');
+          span.className = `tk-${tk.t}`;
+          span.textContent = tk.v;
+          code.append(span);
+        }
+      }
       pre.append(code);
       box.append(head, pre);
       parent.append(box);
@@ -302,7 +365,7 @@ function renderMarkdownInto(target, text, hooks = {}) {
 }
 
 if (typeof module !== 'undefined' && module.exports) {
-  module.exports = { parseBlocks, parseInline };
+  module.exports = { parseBlocks, parseInline, highlightCode };
 } else {
-  window.Markdown = { renderMarkdownInto, parseBlocks, parseInline };
+  window.Markdown = { renderMarkdownInto, parseBlocks, parseInline, highlightCode };
 }

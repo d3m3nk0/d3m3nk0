@@ -488,8 +488,7 @@ async function openSettings(tab = 'profile') {
   $('plugin-filter').value = '';
   $('pa-error').hidden = true;
   $('mcp-json-error').hidden = true;
-  $('s-font').value = localStorage.getItem(LOOK.font) || '14';
-  $('s-col').value = localStorage.getItem(LOOK.col) || '820';
+  renderLook();
   selectTab(tab);
   settingsDlg.showModal();
   settingsDlg.querySelector('.sv2-nav .active')?.focus(); // а не крестик «Закрыть»
@@ -612,24 +611,61 @@ $('s-mcp').addEventListener('change', () => {
 
 /* ------------------------------ внешний вид ------------------------------- */
 
-const LOOK = { font: 'd3m3nk0.fontSize', col: 'd3m3nk0.chatColumn' };
+// Всё хранение и применение — в look.js (window.Look); здесь только меню.
+const PREVIEW = [
+  "Пример ответа: **жирный**, *курсив*, `код в строке`.",
+  "",
+  "```python",
+  "def area(d):",
+  "    # площадь круга, мм²",
+  "    return 3.1416 * d ** 2 / 4  # S = πd²/4",
+  "",
+  "print(area(50), \"мм²\")",
+  "```",
+].join('\n');
 
-function applyLook() {
-  const font = Number(localStorage.getItem(LOOK.font)) || 14;
-  document.documentElement.style.setProperty('--font-size', `${font}px`);
-  const col = localStorage.getItem(LOOK.col) || '820';
-  document.documentElement.style.setProperty('--col', col === '100%' ? '100%' : `${Number(col) || 820}px`);
+function fillSelect(id, key, look) {
+  const sel = $(id);
+  if (!sel.options.length) {
+    for (const o of window.Look.OPTIONS[key]) sel.append(new Option(o.label, o.value));
+    sel.onchange = () => renderLook(window.Look.set(key, sel.value));
+  }
+  sel.value = look[key];
 }
 
-$('s-font').onchange = () => {
-  localStorage.setItem(LOOK.font, $('s-font').value);
-  applyLook();
-};
-$('s-col').onchange = () => {
-  localStorage.setItem(LOOK.col, $('s-col').value);
-  applyLook();
-};
-applyLook();
+function renderLook(look = window.Look.load()) {
+  const theme = $('look-theme');
+  theme.replaceChildren();
+  const icons = { system: '🖥', light: '☀', dark: '☾' };
+  for (const o of window.Look.OPTIONS.theme) {
+    const b = el('button', 'seg-btn', `${icons[o.value]}  ${o.label}`);
+    b.type = 'button';
+    b.setAttribute('role', 'radio');
+    b.setAttribute('aria-checked', String(look.theme === o.value));
+    if (look.theme === o.value) b.classList.add('on');
+    b.onclick = () => renderLook(window.Look.set('theme', o.value));
+    theme.append(b);
+  }
+  const sw = $('look-accent');
+  sw.replaceChildren();
+  const dark = window.Look.effectiveTheme(look) === 'dark';
+  for (const o of window.Look.OPTIONS.accent) {
+    const b = el('button', 'swatch');
+    b.type = 'button';
+    b.style.background = dark ? o.dark : o.light;
+    b.title = o.label;
+    b.setAttribute('role', 'radio');
+    b.setAttribute('aria-label', o.label);
+    b.setAttribute('aria-checked', String(look.accent === o.value));
+    if (look.accent === o.value) b.classList.add('on');
+    b.onclick = () => renderLook(window.Look.set('accent', o.value));
+    sw.append(b);
+  }
+  for (const k of ['fontUi', 'fontAnswer', 'fontSize', 'col', 'fontCode', 'code']) fillSelect(`look-${k}`, k, look);
+  window.Markdown.renderMarkdownInto($('look-preview'), PREVIEW);
+}
+
+$('look-reset').onclick = () => renderLook(window.Look.reset());
 
 /* ------------------------------ меню профиля ------------------------------ */
 

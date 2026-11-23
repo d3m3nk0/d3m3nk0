@@ -523,6 +523,36 @@ async function main() {
     assert.ok(t.some((x) => x.t === 'link' && x.href === 'https://example.org'), 'нормальная ссылка не распознана');
   });
 
+  const { highlightCode } = require('../src/renderer/markdown');
+  const joined = (tokens) => tokens.map((t) => t.v).join('');
+
+  await check('подсветка кода: склеенные куски равны исходному коду (js, python, powershell, json)', () => {
+    const samples = [
+      ['js', 'const x = await fetch("a\\"b"); // коммент\n/* блок */ let n = 0x1F + 4.5;'],
+      ['python', 'def f(a):\n    """док"""\n    return \'s\'  # c\nprint(f(3))'],
+      ['powershell', '$p = Get-ChildItem -Path "C:\\x" # список\nWrite-Host $p.Count'],
+      ['json', '{"a": 1, "b": [true, null], "c": "x"}'],
+      ['js', 'незакрытая "строка\nи `шаблон'],
+    ];
+    for (const [lang, code] of samples) assert.strictEqual(joined(highlightCode(code, lang)), code, `${lang}: текст изменился`);
+  });
+
+  await check('подсветка кода: виды кусков — ключевые слова, строки, числа, комментарии, функции', () => {
+    const kinds = (code, lang) => highlightCode(code, lang).filter((t) => t.t).map((t) => `${t.t}:${t.v}`);
+    assert.deepStrictEqual(kinds('return f(2) // ok', 'js'), ['kw:return', 'fn:f', 'num:2', 'com:// ok']);
+    assert.deepStrictEqual(kinds('x = "s"  # c', 'python'), ['str:"s"', 'com:# c']);
+    assert.deepStrictEqual(kinds('Get-Item $a', 'powershell'), ['fn:Get-Item', 'fn:$a']);
+    assert.ok(kinds('# не комментарий в js', 'js').every((k) => !k.startsWith('com:')), '# в js стал комментарием');
+    assert.deepStrictEqual(highlightCode('npm test', 'text'), [{ t: null, v: 'npm test' }]);
+  });
+
+  await check('подсветка кода: HTML из ответа остаётся текстом, не тегом', () => {
+    const code = '<img src=x onerror="alert(1)"><script>x()</script>';
+    const tokens = highlightCode(code, 'html');
+    assert.strictEqual(joined(tokens), code);
+    assert.ok(tokens.every((t) => t.t === null || ['kw', 'str', 'num', 'com', 'fn'].includes(t.t)), 'неизвестный тип куска');
+  });
+
   await check('Agent.setModel: модель меняется, история остаётся, промпт обновлён', () => {
     const a = new Agent({ config: { provider: 'openai', model: 'old-model', workdir: TMP_ROOT }, session: null, mcp: null });
     a.loadHistory([{ role: 'user', blocks: [{ type: 'text', text: 'привет' }] }]);
