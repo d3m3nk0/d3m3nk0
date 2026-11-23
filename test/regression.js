@@ -461,6 +461,45 @@ async function main() {
     assert.ok(fs.existsSync(outside), 'файл вне папки сессий удалён');
   });
 
+  await check('плагины: выключенный не подключается, сводка показывает off/ok/error', async () => {
+    const { McpManager, describePlugins } = require('../src/core/mcp');
+    const fake = { command: process.execPath, args: [path.join(__dirname, 'helpers', 'fake-mcp.js')] };
+    const servers = {
+      on: fake,
+      off: { ...fake, disabled: true },
+      broken: { command: path.join(TMP_ROOT, 'нет-такой-программы.exe') },
+    };
+    const m = new McpManager();
+    try {
+      const report = await m.connectAll(servers);
+      assert.deepStrictEqual(report.map((r) => r.server).sort(), ['broken', 'on'], 'выключенный попал в подключение');
+      assert.deepStrictEqual(m.toolDefs.map((t) => t.name), ['mcp__on__ping']);
+      const states = Object.fromEntries(describePlugins(servers, report).map((p) => [p.name, p.state]));
+      assert.deepStrictEqual(states, { on: 'ok', off: 'off', broken: 'error' });
+      assert.strictEqual(describePlugins({ fresh: fake }, [])[0].state, 'pending');
+    } finally {
+      await m.closeAll();
+    }
+  });
+
+  await check('плагины: молчащий сервер не вешает сборку — ошибка по таймауту, остальные подключены', async () => {
+    const { McpManager } = require('../src/core/mcp');
+    const fake = { command: process.execPath, args: [path.join(__dirname, 'helpers', 'fake-mcp.js')] };
+    const silent = { command: process.execPath, args: ['-e', 'setInterval(() => {}, 1000)'], startupTimeoutMs: 800 };
+    const m = new McpManager();
+    const t0 = Date.now();
+    try {
+      const report = await m.connectAll({ silent, on: fake });
+      const ms = Date.now() - t0;
+      assert.ok(ms < 10000, `сборка шла ${ms} мс`);
+      const bad = report.find((r) => r.server === 'silent');
+      assert.ok(bad && !bad.ok && /не ответил/.test(bad.error), `нет ошибки таймаута: ${JSON.stringify(bad)}`);
+      assert.ok(report.find((r) => r.server === 'on')?.ok, 'рабочий плагин не подключился после зависшего');
+    } finally {
+      await m.closeAll();
+    }
+  });
+
   const { parseBlocks, parseInline } = require('../src/renderer/markdown');
 
   await check('markdown: жирный, курсив, `код` и snake_case без ложного курсива', () => {

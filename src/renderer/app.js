@@ -454,8 +454,7 @@ $('model-badge').onclick = async () => {
   const res = await window.d3.modelMenu();
   if (res.error) addError(res.error);
   if (res.openSettings) {
-    await refreshConfig();
-    $('settings').showModal();
+    await openSettings('model');
     $('s-model').focus();
     return;
   }
@@ -465,10 +464,172 @@ $('model-badge').onclick = async () => {
   }
 };
 
-async function openSettings() {
-  await refreshConfig();
-  $('settings').showModal();
+/* ----------------------- настройки: разделы слева ------------------------ */
+
+const settingsDlg = $('settings');
+
+function selectTab(tab) {
+  for (const b of settingsDlg.querySelectorAll('.sv2-nav [data-tab]')) {
+    const on = b.dataset.tab === tab;
+    b.classList.toggle('active', on);
+    b.setAttribute('aria-current', on ? 'page' : 'false');
+  }
+  for (const s of settingsDlg.querySelectorAll('[data-pane]')) s.hidden = s.dataset.pane !== tab;
 }
+
+for (const b of settingsDlg.querySelectorAll('.sv2-nav [data-tab]')) {
+  b.onclick = () => selectTab(b.dataset.tab);
+}
+
+async function openSettings(tab = 'profile') {
+  await refreshConfig();
+  mcpDraft = structuredClone(currentConfig?.mcpServers || {});
+  syncMcpJson();
+  $('plugin-filter').value = '';
+  $('pa-error').hidden = true;
+  $('mcp-json-error').hidden = true;
+  $('s-font').value = localStorage.getItem(LOOK.font) || '14';
+  $('s-col').value = localStorage.getItem(LOOK.col) || '820';
+  selectTab(tab);
+  settingsDlg.showModal();
+  settingsDlg.querySelector('.sv2-nav .active')?.focus(); // а не крестик «Закрыть»
+  await renderPlugins();
+}
+
+/* ------------------------------ плагины (MCP) ----------------------------- */
+
+// Черновик плагинов: правится переключателями и формой, в конфиг уходит по «Сохранить».
+let mcpDraft = {};
+const PLUGIN_NAME = /^[A-Za-z0-9-]+(?:_[A-Za-z0-9-]+)*$/; // без «__»: это разделитель в mcp__<плагин>__<инструмент>
+
+function syncMcpJson() {
+  $('s-mcp').value = JSON.stringify(mcpDraft, null, 2);
+}
+
+async function renderPlugins() {
+  const list = $('plugin-list');
+  const saved = currentConfig?.mcpServers || {};
+  const status = new Map((await window.d3.plugins()).map((p) => [p.name, p]));
+  const q = $('plugin-filter').value.trim().toLowerCase();
+  list.replaceChildren();
+
+  const names = Object.keys(mcpDraft).filter((n) => n.toLowerCase().includes(q));
+  if (!names.length) {
+    list.append(el('div', 'pane-note', Object.keys(mcpDraft).length ? 'Ничего не найдено.' : 'Плагинов пока нет. Добавьте первый ниже.'));
+    return;
+  }
+
+  for (const name of names) {
+    const cfg = mcpDraft[name] || {};
+    const enabled = !cfg.disabled;
+    const st = status.get(name);
+    const changed = !saved[name] || !!saved[name].disabled !== !!cfg.disabled;
+
+    const card = el('div', 'plugin');
+    const icon = el('div', 'plugin-icon', name[0].toUpperCase());
+    const text = el('div', 'plugin-text');
+    text.append(el('div', 'plugin-name', name));
+
+    let line;
+    if (changed) line = enabled ? 'включится после сохранения' : 'выключится после сохранения';
+    else if (!enabled) line = 'выключен';
+    else if (st?.state === 'ok') line = `подключён · ${st.tools} из ${st.total} инструментов`;
+    else if (st?.state === 'error') line = `ошибка: ${st.error}`;
+    else line = 'подключается…';
+    const sub = el('div', 'plugin-sub', line);
+    if (!changed && st?.state === 'error' && enabled) sub.classList.add('err');
+    if (!changed && st?.state === 'ok' && enabled) sub.classList.add('ok');
+    const cmd = (cfg.command || '').split(/[\\/]/).pop();
+    if (cmd) sub.title = `${cfg.command} ${(cfg.args || []).join(' ')}`;
+    text.append(sub);
+
+    const sw = el('input');
+    sw.type = 'checkbox';
+    sw.className = 'switch';
+    sw.setAttribute('role', 'switch');
+    sw.setAttribute('aria-label', `Плагин ${name}`);
+    sw.checked = enabled;
+    sw.onchange = () => {
+      if (sw.checked) delete mcpDraft[name].disabled;
+      else mcpDraft[name].disabled = true;
+      syncMcpJson();
+      renderPlugins();
+    };
+
+    const del = el('button', 'ghost icon-btn', '✕');
+    del.type = 'button';
+    del.title = 'Удалить плагин';
+    del.setAttribute('aria-label', `Удалить плагин ${name}`);
+    del.onclick = () => {
+      if (!confirm(`Удалить плагин «${name}» из настроек? Сама программа на диске останется.`)) return;
+      delete mcpDraft[name];
+      syncMcpJson();
+      renderPlugins();
+    };
+
+    card.append(icon, text, sw, del);
+    list.append(card);
+  }
+}
+
+$('plugin-filter').oninput = () => renderPlugins();
+
+$('pa-add').onclick = () => {
+  const name = $('pa-name').value.trim();
+  const command = $('pa-command').value.trim();
+  const args = $('pa-args').value.split('\n').map((s) => s.trim()).filter(Boolean);
+  const err = $('pa-error');
+  let msg = '';
+  if (!PLUGIN_NAME.test(name)) msg = 'Имя: только латиница, цифры, «-» и «_» (без двойного «__»).';
+  else if (mcpDraft[name]) msg = `Плагин «${name}» уже есть.`;
+  else if (!command) msg = 'Укажите команду запуска.';
+  err.textContent = msg;
+  err.hidden = !msg;
+  if (msg) return;
+  mcpDraft[name] = { command, args };
+  $('pa-name').value = '';
+  $('pa-command').value = '';
+  $('pa-args').value = '';
+  syncMcpJson();
+  renderPlugins();
+};
+for (const id of ['pa-name', 'pa-command', 'pa-args']) $(id).addEventListener('input', () => ($('pa-error').hidden = true));
+
+// Правка JSON вручную: если он верный — список обновляется из него.
+$('s-mcp').addEventListener('change', () => {
+  const err = $('mcp-json-error');
+  try {
+    const parsed = JSON.parse($('s-mcp').value || '{}');
+    if (!parsed || typeof parsed !== 'object' || Array.isArray(parsed)) throw new Error('нужен объект { "имя": {...} }');
+    mcpDraft = parsed;
+    err.hidden = true;
+    renderPlugins();
+  } catch (e) {
+    err.textContent = `JSON с ошибкой: ${e.message}`;
+    err.hidden = false;
+  }
+});
+
+/* ------------------------------ внешний вид ------------------------------- */
+
+const LOOK = { font: 'd3m3nk0.fontSize', col: 'd3m3nk0.chatColumn' };
+
+function applyLook() {
+  const font = Number(localStorage.getItem(LOOK.font)) || 14;
+  document.documentElement.style.setProperty('--font-size', `${font}px`);
+  const col = localStorage.getItem(LOOK.col) || '820';
+  document.documentElement.style.setProperty('--col', col === '100%' ? '100%' : `${Number(col) || 820}px`);
+}
+
+$('s-font').onchange = () => {
+  localStorage.setItem(LOOK.font, $('s-font').value);
+  applyLook();
+};
+$('s-col').onchange = () => {
+  localStorage.setItem(LOOK.col, $('s-col').value);
+  applyLook();
+};
+applyLook();
 
 /* ------------------------------ меню профиля ------------------------------ */
 
@@ -538,6 +699,7 @@ profileMenu.addEventListener('click', async (e) => {
   setProfileMenu(false);
   const act = item.dataset.act;
   if (act === 'settings') openSettings();
+  else if (act === 'plugins') openSettings('plugins');
   else if (act === 'usage') {
     const u = await window.d3.usage();
     const share = u.budget ? Math.min(100, Math.round((u.contextTokens / u.budget) * 100)) : 0;
@@ -578,7 +740,10 @@ $('save-settings').onclick = async (e) => {
   try {
     mcpServers = JSON.parse($('s-mcp').value || '{}');
   } catch (err) {
-    alert('MCP-серверы: некорректный JSON\n' + err.message);
+    selectTab('plugins');
+    $('s-mcp').closest('details').open = true;
+    $('mcp-json-error').textContent = `JSON с ошибкой: ${err.message}`;
+    $('mcp-json-error').hidden = false;
     return;
   }
   const patch = {

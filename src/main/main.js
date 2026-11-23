@@ -13,7 +13,7 @@ const os = require('node:os');
 const path = require('node:path');
 const { loadConfig, saveConfig } = require('../core/config');
 const { Session } = require('../core/session');
-const { McpManager } = require('../core/mcp');
+const { McpManager, describePlugins } = require('../core/mcp');
 const { Agent } = require('../core/agent');
 
 // Режим скриншота: GPU-композитинг в удалённой сессии не отдаёт кадр
@@ -25,6 +25,7 @@ let config = loadConfig();
 let session = new Session();
 let mcp = new McpManager();
 let agent = null;
+let mcpReport = []; // последний отчёт подключения MCP — для раздела «Плагины»
 const pendingPermissions = new Map();
 
 function emit(event) {
@@ -74,6 +75,7 @@ async function doBuildAgent({ history = [] } = {}) {
   agent?.abort();
   await mcp.closeAll();
   const report = await mcp.connectAll(config.mcpServers);
+  mcpReport = report;
   for (const r of report) {
     if (!r.ok) {
       emit({ type: 'info', message: `MCP ${r.server}: ошибка — ${r.error}` });
@@ -404,6 +406,7 @@ ipcMain.handle('agent:abort', () => {
 });
 
 ipcMain.handle('mcp:status', () => mcp.status);
+ipcMain.handle('mcp:plugins', () => describePlugins(config.mcpServers, mcpReport));
 
 ipcMain.on('permission:reply', (_e, { id, approved }) => {
   const resolve = pendingPermissions.get(id);

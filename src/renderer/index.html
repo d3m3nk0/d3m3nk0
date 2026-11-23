@@ -17,6 +17,7 @@
         <div id="profile-menu" class="popover" role="menu" hidden>
           <div id="pm-head" class="pop-head"></div>
           <button class="pop-item" role="menuitem" data-act="settings"><span>Настройки</span><kbd>Ctrl+,</kbd></button>
+          <button class="pop-item" role="menuitem" data-act="plugins"><span>Плагины</span></button>
           <button class="pop-item" role="menuitem" data-act="usage"><span>Использование</span></button>
           <button class="pop-item" role="menuitem" data-act="workdir"><span>Открыть рабочую папку</span></button>
           <div class="pop-sep"></div>
@@ -54,50 +55,116 @@
       </footer>
     </main>
 
-    <dialog id="settings">
-      <form method="dialog" class="settings-form">
-        <h2>Настройки</h2>
+    <dialog id="settings" class="settings-v2">
+      <form method="dialog" class="sv2">
+        <div class="sv2-head">
+          <h2>Настройки</h2>
+          <button value="cancel" class="icon-btn" aria-label="Закрыть">✕</button>
+        </div>
+        <div class="sv2-body">
+          <nav class="sv2-nav" aria-label="Разделы настроек">
+            <button type="button" data-tab="profile">Профиль</button>
+            <button type="button" data-tab="model">Модель и ключ</button>
+            <button type="button" data-tab="work">Работа и доступ</button>
+            <button type="button" data-tab="appearance">Внешний вид</button>
+            <div class="sv2-sep"></div>
+            <button type="button" data-tab="plugins">Плагины</button>
+          </nav>
 
-        <label>Ваше имя (для меню внизу слева)
-          <input id="s-name" placeholder="по умолчанию — имя пользователя Windows" />
-        </label>
+          <div class="sv2-pane settings-form">
+            <section data-pane="profile">
+              <h3>Профиль</h3>
+              <label>Ваше имя (для меню внизу слева)
+                <input id="s-name" placeholder="по умолчанию — имя пользователя Windows" />
+              </label>
+              <p class="pane-note">Аккаунта у d3m3nk0 нет: модель подключается по API-ключу из раздела «Модель и ключ».</p>
+            </section>
 
-        <label>Провайдер
-          <select id="s-provider">
-            <option value="anthropic">Anthropic</option>
-            <option value="openai">OpenAI-совместимый</option>
-          </select>
-        </label>
+            <section data-pane="model" hidden>
+              <h3>Модель и ключ</h3>
+              <label>Провайдер
+                <select id="s-provider">
+                  <option value="anthropic">Anthropic</option>
+                  <option value="openai">OpenAI-совместимый</option>
+                </select>
+              </label>
+              <label>Модель
+                <input id="s-model" placeholder="claude-sonnet-4-5" />
+              </label>
+              <label>Base URL
+                <input id="s-baseurl" placeholder="https://api.anthropic.com" />
+              </label>
+              <label>API-ключ
+                <input id="s-apikey" type="password" placeholder="ключ хранится в ~/.d3m3nk0/config.json" />
+              </label>
+            </section>
 
-        <label>Модель
-          <input id="s-model" placeholder="claude-sonnet-4-5" />
-        </label>
+            <section data-pane="work" hidden>
+              <h3>Работа и доступ</h3>
+              <label>Рабочая папка
+                <input id="s-workdir" placeholder="C:\путь\к\проекту" />
+              </label>
+              <label>Политика доступа
+                <select id="s-permission">
+                  <option value="ask">ask — спрашивать про правки и команды</option>
+                  <option value="allow-edits">allow-edits — правки без спроса, команды с подтверждением</option>
+                  <option value="yolo">yolo — ничего не спрашивать</option>
+                </select>
+              </label>
+            </section>
 
-        <label>Base URL
-          <input id="s-baseurl" placeholder="https://api.anthropic.com" />
-        </label>
+            <section data-pane="appearance" hidden>
+              <h3>Внешний вид</h3>
+              <label>Размер текста
+                <select id="s-font">
+                  <option value="13">Мелкий</option>
+                  <option value="14">Обычный</option>
+                  <option value="15.5">Крупный</option>
+                  <option value="17">Очень крупный</option>
+                </select>
+              </label>
+              <label>Ширина колонки чата
+                <select id="s-col">
+                  <option value="720">Узкая</option>
+                  <option value="820">Обычная</option>
+                  <option value="1000">Широкая</option>
+                  <option value="100%">Во всю ширину</option>
+                </select>
+              </label>
+              <p class="pane-note">Внешний вид меняется сразу и запоминается на этом компьютере.</p>
+            </section>
 
-        <label>API-ключ
-          <input id="s-apikey" type="password" placeholder="ключ хранится в ~/.d3m3nk0/config.json" />
-        </label>
+            <section data-pane="plugins" hidden>
+              <h3>Плагины</h3>
+              <p class="pane-note">Плагины — это MCP-серверы: они дают агенту новые инструменты. Выключенный плагин не запускается и не тратит токены.</p>
+              <input id="plugin-filter" type="search" placeholder="Отфильтровать плагины" />
+              <div id="plugin-list" class="plugin-list"></div>
 
-        <label>Рабочая папка
-          <input id="s-workdir" placeholder="C:\\путь\\к\\проекту" />
-        </label>
+              <details class="plugin-add">
+                <summary>+ Добавить плагин</summary>
+                <label>Имя (латиница, цифры, - и _)
+                  <input id="pa-name" placeholder="например, files" />
+                </label>
+                <label>Команда запуска
+                  <input id="pa-command" placeholder="например, C:\Program Files\nodejs\node.exe" />
+                </label>
+                <label>Аргументы (по одному в строке)
+                  <textarea id="pa-args" rows="3" spellcheck="false"></textarea>
+                </label>
+                <div id="pa-error" class="field-error" hidden></div>
+                <div class="dialog-actions"><button type="button" id="pa-add">Добавить</button></div>
+              </details>
 
-        <label>Политика доступа
-          <select id="s-permission">
-            <option value="ask">ask — спрашивать про правки и команды</option>
-            <option value="allow-edits">allow-edits — правки без спроса, команды с подтверждением</option>
-            <option value="yolo">yolo — ничего не спрашивать</option>
-          </select>
-        </label>
-
-        <label>MCP-серверы (JSON)
-          <textarea id="s-mcp" rows="6" spellcheck="false"></textarea>
-        </label>
-
-        <div class="dialog-actions">
+              <details class="plugin-json">
+                <summary>Расширенно: все плагины в JSON</summary>
+                <textarea id="s-mcp" rows="14" spellcheck="false" wrap="off"></textarea>
+                <div id="mcp-json-error" class="field-error" hidden></div>
+              </details>
+            </section>
+          </div>
+        </div>
+        <div class="dialog-actions sv2-foot">
+          <span class="pane-note">Изменения применяются после «Сохранить».</span>
           <button value="cancel" class="ghost">Отмена</button>
           <button id="save-settings" value="default">Сохранить</button>
         </div>

@@ -11,6 +11,10 @@
 
 const path = require('node:path');
 
+// Сколько ждать, пока сервер запустится и отдаст список инструментов.
+// REA с Ghidra стартует за секунды; 45 с — с большим запасом.
+const STARTUP_TIMEOUT_MS = 45000;
+
 class McpManager {
   constructor() {
     this.servers = new Map(); // name -> { client, tools: [{name, description, input_schema}] }
@@ -44,15 +48,32 @@ class McpManager {
       stderr: 'pipe',
     });
     const client = new Client({ name: 'd3m3nk0', version: '0.1.0' }, { capabilities: {} });
+    // Сервер, который запустился и молчит, иначе держал бы сборку агента вечно:
+    // окно ждало бы «Сохранить» без конца. Предел — startupTimeoutMs в конфиге.
+    const limitMs = Number(cfg.startupTimeoutMs) > 0 ? Number(cfg.startupTimeoutMs) : STARTUP_TIMEOUT_MS;
+    let timer;
+    const timeout = new Promise((_, reject) => {
+      timer = setTimeout(
+        () => reject(new Error(`не ответил за ${Math.round(limitMs / 1000)} с (проверьте команду запуска)`)),
+        limitMs,
+      );
+    });
     let listed;
     try {
-      await client.connect(transport);
-      listed = await client.listTools();
+      listed = await Promise.race([
+        (async () => {
+          await client.connect(transport);
+          return client.listTools();
+        })(),
+        timeout,
+      ]);
     } catch (e) {
       // Процесс сервера мог уже запуститься. В servers он ещё не попал,
       // поэтому closeAll() о нём не узнает — закрываем здесь.
       await client.close().catch(() => {});
       throw e;
+    } finally {
+      clearTimeout(timer);
     }
 
     // Сервер может отдавать сотни инструментов, а они уходят в каждый запрос
@@ -125,4 +146,27 @@ class McpManager {
   }
 }
 
-module.exports = { McpManager };
+/**
+ * Сводка плагинов для окна настроек: каждый сервер из конфига и его
+ * состояние по последнему отчёту connectAll().
+ *   state: 'off' (выключен) | 'ok' (подключён) | 'error' | 'pending' (ещё не подключали)
+ */
+function describePlugins(serversCfg = {}, report = []) {
+  const byName = new Map(report.map((r) => [r.server, r]));
+  return Object.entries(serversCfg).map(([name, cfg]) => {
+    const c = cfg || {};
+    const r = byName.get(name);
+    const base = {
+      name,
+      enabled: !c.disabled,
+      command: c.command || '',
+      filtered: Array.isArray(c.tools) && c.tools.length ? c.tools.length : null,
+    };
+    if (c.disabled) return { ...base, state: 'off' };
+    if (!r) return { ...base, state: 'pending' };
+    if (!r.ok) return { ...base, state: 'error', error: r.error };
+    return { ...base, state: 'ok', tools: r.tools, total: r.total };
+  });
+}
+
+module.exports = { McpManager, describePlugins };
