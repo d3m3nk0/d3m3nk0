@@ -13,6 +13,8 @@
  * инструменты — внешние (MCP) и встроенные; каждое действие проходит гейт.
  */
 
+const fs = require('node:fs');
+const path = require('node:path');
 const { runTurn, estimateMessagesTokens } = require('./providers');
 const { toolSchemas, runTool } = require('./tools');
 const { prepareForRequest, toolSchemaTokens } = require('./context');
@@ -20,8 +22,30 @@ const { prepareForRequest, toolSchemaTokens } = require('./context');
 const MAX_STEPS = 40;
 const READ_ONLY_TOOLS = new Set(['read_file', 'list_dir', 'glob_search', 'grep_search']);
 
+const RULES_FILE = 'AGENTS.md';
+const RULES_MAX_CHARS = 8000; // ~2000 токенов: правила уходят в каждый запрос
+
+/**
+ * Правила пользователя из AGENTS.md в корне рабочей папки (как в OpenCode).
+ * Нет файла или его не прочитать — пустая строка; длинный файл обрезается.
+ */
+function loadProjectRules(workdir) {
+  if (!workdir) return '';
+  let text;
+  try {
+    text = fs.readFileSync(path.join(workdir, RULES_FILE), 'utf8').trim();
+  } catch {
+    return '';
+  }
+  if (text.length > RULES_MAX_CHARS) {
+    text = `${text.slice(0, RULES_MAX_CHARS)}\n[…${RULES_FILE} обрезан: длиннее ${RULES_MAX_CHARS} символов]`;
+  }
+  return text;
+}
+
 function buildSystemPrompt(config) {
-  return [
+  const rules = loadProjectRules(config.workdir);
+  const lines = [
     'Ты — d3m3nk0, десктопный агент для работы с кодом.',
     '',
     'Как работать:',
@@ -36,7 +60,11 @@ function buildSystemPrompt(config) {
     `- ОС: ${process.platform} ${process.arch}`,
     `- Рабочая папка: ${config.workdir}`,
     `- Провайдер модели: ${config.provider}, модель: ${config.model}`,
-  ].join('\n');
+  ];
+  if (rules) {
+    lines.push('', `Правила пользователя из ${RULES_FILE} (выполняй их всегда):`, '', rules);
+  }
+  return lines.join('\n');
 }
 
 function needsApproval(mode, toolName) {
@@ -238,4 +266,4 @@ class Agent {
   }
 }
 
-module.exports = { Agent, buildSystemPrompt, needsApproval };
+module.exports = { Agent, buildSystemPrompt, loadProjectRules, needsApproval, RULES_MAX_CHARS };

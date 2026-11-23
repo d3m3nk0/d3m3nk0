@@ -26,7 +26,7 @@ process.env.D3M3NK0_HOME = HOME; // до require ядра: config.js читае�
 const { startFakeLlm, STREAM_CHUNKS, WHOLE_TEXT, AFTER_TOOL_TEXT } = require('./helpers/fake-llm');
 const { loadConfig } = require('../src/core/config');
 const { Session } = require('../src/core/session');
-const { Agent } = require('../src/core/agent');
+const { Agent, buildSystemPrompt, loadProjectRules, RULES_MAX_CHARS } = require('../src/core/agent');
 const { estimateTokens, estimateMessagesTokens } = require('../src/core/providers');
 const { truncateToolResult, prepareForRequest, toolSchemaTokens } = require('../src/core/context');
 
@@ -418,6 +418,28 @@ async function main() {
     const m = t.match(/\n\[…пропущено ~(\d+) токенов из середины вывода; ниже приведён его конец…\]\n/);
     assert.ok(m, 'текст пометки изменился');
     assert.strictEqual(Number(m[1]), estimateTokens(long.slice(800, long.length - 400)));
+  });
+
+  const rulesDir = path.join(TMP_ROOT, 'rules');
+  fs.mkdirSync(rulesDir, { recursive: true });
+  const baseCfg = { provider: 'openai', model: 'fake' };
+
+  await check('AGENTS.md: без файла системный промпт без раздела правил', () => {
+    const sys = buildSystemPrompt({ ...baseCfg, workdir: rulesDir });
+    assert.ok(!/AGENTS\.md/.test(sys), 'раздел правил появился без файла');
+  });
+
+  await check('AGENTS.md: правила из рабочей папки попадают в системный промпт', () => {
+    fs.writeFileSync(path.join(rulesDir, 'AGENTS.md'), '# Правила\n- ПРАВИЛО-МЕТКА-42\n');
+    const sys = buildSystemPrompt({ ...baseCfg, workdir: rulesDir });
+    assert.ok(/ПРАВИЛО-МЕТКА-42/.test(sys), 'текст правил не попал в промпт');
+  });
+
+  await check('AGENTS.md: длинный файл обрезается до лимита с пометкой', () => {
+    fs.writeFileSync(path.join(rulesDir, 'AGENTS.md'), 'я'.repeat(RULES_MAX_CHARS * 2));
+    const rules = loadProjectRules(rulesDir);
+    assert.ok(rules.length < RULES_MAX_CHARS + 200, `правила не обрезаны: ${rules.length}`);
+    assert.ok(/обрезан/.test(rules), 'нет пометки об обрезке');
   });
 
   await check('test/smoke.js по-прежнему проходит (границы рабочей папки)', async () => {
