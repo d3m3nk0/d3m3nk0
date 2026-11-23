@@ -260,13 +260,30 @@ async function refreshSessions() {
   box.replaceChildren();
   for (const s of list) {
     const btn = el('button', 'session', s.title || s.id);
-    btn.title = s.id;
+    btn.title = `${s.id}\nПравый клик — закрепить или удалить`;
+    if (s.pinned) btn.classList.add('pinned');
+    if (s.current) btn.classList.add('active');
     btn.onclick = async () => {
       const res = await window.d3.loadSession(s.id);
       renderHistory(res.messages);
       for (const b of box.children) b.classList.remove('active');
       btn.classList.add('active');
       addInfo(`Сессия ${s.id} загружена`);
+    };
+    btn.oncontextmenu = async (e) => {
+      e.preventDefault();
+      const res = await window.d3.sessionMenu(s.id, s.pinned);
+      if (res.error) addError(res.error);
+      if (!res.action) return;
+      if (res.action === 'delete') {
+        if (res.wasCurrent) {
+          renderHistory([]);
+          addInfo(`Сессия удалена, начата новая ${res.newId}`);
+        } else {
+          addInfo('Сессия перемещена в Корзину');
+        }
+      }
+      refreshSessions();
     };
     box.append(btn);
   }

@@ -420,6 +420,47 @@ async function main() {
     assert.strictEqual(Number(m[1]), estimateTokens(long.slice(800, long.length - 400)));
   });
 
+  // Сессии в HOME теста (D3M3NK0_HOME выставлен до загрузки ядра).
+  const mkSession = (text) => {
+    const s = new Session();
+    s.append({ kind: 'message', message: { role: 'user', blocks: [{ type: 'text', text }] } });
+    return s.id;
+  };
+  const sOld = mkSession('старая');
+  const sNew = mkSession('новая');
+  fs.utimesSync(Session.fileOf(sOld), new Date(2020, 0, 1), new Date(2020, 0, 1));
+
+  await check('сессии: закреплённая идёт первой, даже если она старше', () => {
+    Session.setPinned(sOld, true);
+    const list = Session.list();
+    assert.strictEqual(list[0].id, sOld, 'закреплённая не первая');
+    assert.strictEqual(list[0].pinned, true);
+    assert.ok(list.some((s) => s.id === sNew && !s.pinned), 'вторая сессия пропала или закреплена');
+  });
+
+  await check('сессии: открепить возвращает обычный порядок', () => {
+    Session.setPinned(sOld, false);
+    const ids = Session.list().map((s) => s.id);
+    assert.ok(ids.indexOf(sNew) < ids.indexOf(sOld), 'старая всё ещё выше новой');
+  });
+
+  await check('сессии: удаление через trash убирает файл и закрепление', async () => {
+    Session.setPinned(sNew, true);
+    const trashed = [];
+    await Session.remove(sNew, { trash: async (f) => { trashed.push(f); fs.unlinkSync(f); } });
+    assert.deepStrictEqual(trashed, [Session.fileOf(sNew)], 'trash вызван не с тем файлом');
+    assert.ok(!Session.list().some((s) => s.id === sNew), 'сессия осталась в списке');
+    assert.ok(!JSON.parse(fs.readFileSync(path.join(HOME, 'sessions', 'pinned.json'), 'utf8')).includes(sNew), 'осталась в pinned.json');
+  });
+
+  await check('сессии: id с путём отвергается, файлы вне папки не трогаются', async () => {
+    const outside = path.join(HOME, 'victim.jsonl');
+    fs.writeFileSync(outside, 'x');
+    await assert.rejects(() => Session.remove('../victim'), /Недопустимый id/);
+    assert.throws(() => Session.setPinned('..\\victim', true), /Недопустимый id/);
+    assert.ok(fs.existsSync(outside), 'файл вне папки сессий удалён');
+  });
+
   const rulesDir = path.join(TMP_ROOT, 'rules');
   fs.mkdirSync(rulesDir, { recursive: true });
   const baseCfg = { provider: 'openai', model: 'fake' };

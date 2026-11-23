@@ -7,7 +7,7 @@
  * Это принципиально: у рендерера нет доступа к файловой системе и процессам.
  */
 
-const { app, BrowserWindow, ipcMain } = require('electron');
+const { app, BrowserWindow, ipcMain, Menu, dialog, shell } = require('electron');
 const fs = require('node:fs');
 const path = require('node:path');
 const { loadConfig, saveConfig } = require('../core/config');
@@ -233,7 +233,59 @@ ipcMain.handle('config:set', async (_e, patch) => {
   return { ok: true, workdir: config.workdir, model: config.model, provider: config.provider };
 });
 
-ipcMain.handle('session:list', () => Session.list());
+ipcMain.handle('session:list', () => Session.list().map((s) => ({ ...s, current: s.id === session.id })));
+
+/** Показать меню, вернуть выбранный пункт ('pin' | 'unpin' | 'delete') или null. */
+function popupMenu(items) {
+  return new Promise((resolve) => {
+    let choice = null;
+    const menu = Menu.buildFromTemplate(
+      items.map(([label, value]) => (value ? { label, click: () => (choice = value) } : { type: 'separator' })),
+    );
+    menu.popup({ window: win, callback: () => resolve(choice) });
+  });
+}
+
+// Правый клик по сессии в списке: закрепить / открепить / удалить.
+ipcMain.handle('session:menu', async (_e, { id, pinned }) => {
+  const choice = await popupMenu([
+    [pinned ? 'Открепить' : 'Закрепить', pinned ? 'unpin' : 'pin'],
+    ['-'],
+    ['Удалить…', 'delete'],
+  ]);
+  if (!choice) return { action: null };
+
+  if (choice === 'pin' || choice === 'unpin') {
+    Session.setPinned(id, choice === 'pin');
+    return { action: choice };
+  }
+
+  const isCurrent = id === session.id;
+  if (isCurrent && agent?.busy) {
+    return { action: null, error: 'Агент сейчас работает в этой сессии. Остановите его и повторите.' };
+  }
+  const { response } = await dialog.showMessageBox(win, {
+    type: 'warning',
+    buttons: ['Удалить', 'Отмена'],
+    defaultId: 1,
+    cancelId: 1,
+    title: 'Удалить сессию',
+    message: 'Удалить эту сессию?',
+    detail: 'Журнал сессии будет перемещён в Корзину Windows, оттуда его можно восстановить.',
+  });
+  if (response !== 0) return { action: null };
+
+  try {
+    await Session.remove(id, { trash: (file) => shell.trashItem(file) });
+  } catch (e) {
+    return { action: null, error: `Не удалось удалить: ${e.message || e}` };
+  }
+  if (isCurrent) {
+    session = new Session();
+    await buildAgent({ history: [] });
+  }
+  return { action: 'delete', wasCurrent: isCurrent, newId: isCurrent ? session.id : null };
+});
 
 ipcMain.handle('session:new', async () => {
   session = new Session();

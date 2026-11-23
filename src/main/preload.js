@@ -8,6 +8,7 @@ contextBridge.exposeInMainWorld('d3', {
   listSessions: () => ipcRenderer.invoke('session:list'),
   newSession: () => ipcRenderer.invoke('session:new'),
   loadSession: (id) => ipcRenderer.invoke('session:load', id),
+  sessionMenu: (id, pinned) => ipcRenderer.invoke('session:menu', { id, pinned }),
   send: (text) => ipcRenderer.invoke('agent:send', text),
   abort: () => ipcRenderer.invoke('agent:abort'),
   mcpStatus: () => ipcRenderer.invoke('mcp:status'),

@@ -75,6 +75,7 @@ body {
 }
 .session:hover { background: var(--panel-2); color: var(--text); }
 .session.active { border-color: var(--line); background: var(--panel-2); color: var(--text); }
+.session.pinned::before { content: '📌 '; }
 
 .sidebar-foot { border-top: 1px solid var(--line); padding-top: 10px; }
 
