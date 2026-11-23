@@ -592,6 +592,92 @@ async function main() {
     assert.strictEqual(code, 0, `smoke.js вышел с кодом ${code}`);
   });
 
+  /* --------------------------- view_image (картинки) --------------------------- */
+
+  const { runTool } = require('../src/core/tools');
+  const { toOpenAIMessages, toAnthropicMessages } = require('../src/core/providers');
+  // Настоящий PNG 1×1 (красный пиксель).
+  const PNG_1PX = Buffer.from('iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mP8z8DwHwAFBQIAX8jx0gAAAABJRU5ErkJggg==', 'base64');
+  const picDir = path.join(TMP_ROOT, 'pics');
+  fs.mkdirSync(picDir, { recursive: true });
+  fs.writeFileSync(path.join(picDir, 'pic.png'), PNG_1PX);
+  fs.writeFileSync(path.join(picDir, 'notes.txt'), 'текст');
+  const picCtx = { workdir: picDir, allowOutside: false };
+
+  await check('view_image: отдаёт картинку base64 и тип; не-картинку и путь вне папки отвергает', async () => {
+    const out = await runTool('view_image', { path: 'pic.png' }, picCtx);
+    assert.strictEqual(out.image.media_type, 'image/png');
+    assert.strictEqual(out.image.data, PNG_1PX.toString('base64'));
+    assert.strictEqual(out.image.path, 'pic.png');
+    assert.ok(/pic\.png/.test(out.text));
+    await assert.rejects(() => runTool('view_image', { path: 'notes.txt' }, picCtx), /не поддержан/);
+    await assert.rejects(() => runTool('view_image', { path: path.join(TMP_ROOT, 'x.png') }, picCtx), /вне рабочей папки/);
+  });
+
+  await check('view_image: в окне большие картинки уменьшаются через resizeImage', async () => {
+    let asked = null;
+    const resizeImage = async (buf, opts) => {
+      asked = opts;
+      return { data: Buffer.from('jpegdata'), mediaType: 'image/jpeg', width: 800, height: 600 };
+    };
+    const out = await runTool('view_image', { path: 'pic.png' }, { ...picCtx, resizeImage });
+    assert.ok(asked && asked.maxSide > 0, 'resizeImage не вызван');
+    assert.strictEqual(out.image.media_type, 'image/jpeg');
+    assert.strictEqual(out.image.data, Buffer.from('jpegdata').toString('base64'));
+    assert.ok(/800×600/.test(out.text), 'в тексте нет нового размера');
+  });
+
+  const imgHistory = () => [
+    { role: 'user', blocks: [{ type: 'text', text: 'посмотри' }] },
+    { role: 'assistant', blocks: [{ type: 'tool_use', id: 'c1', name: 'view_image', input: { path: 'pic.png' } }] },
+    { role: 'user', blocks: [{ type: 'tool_result', id: 'c1', content: 'Картинка pic.png', image: { media_type: 'image/png', data: 'QUJD', path: 'pic.png' } }] },
+  ];
+
+  await check('картинка → OpenAI: ответ инструмента текстом, картинка следующим сообщением user', () => {
+    const msgs = toOpenAIMessages('sys', imgHistory());
+    assert.deepStrictEqual(msgs.map((m) => m.role), ['system', 'user', 'assistant', 'tool', 'user']);
+    assert.strictEqual(typeof msgs[3].content, 'string');
+    const parts = msgs[4].content;
+    assert.ok(parts.some((p) => p.type === 'image_url' && p.image_url.url === 'data:image/png;base64,QUJD'), 'нет image_url');
+  });
+
+  await check('картинка → Anthropic: image внутри tool_result', () => {
+    const msgs = toAnthropicMessages(imgHistory());
+    const tr = msgs[2].content[0];
+    assert.strictEqual(tr.type, 'tool_result');
+    assert.deepStrictEqual(tr.content[1], { type: 'image', source: { type: 'base64', media_type: 'image/png', data: 'QUJD' } });
+  });
+
+  await check('картинка из прошлого хода не уходит в модель снова (даже при limit 0)', () => {
+    const hist = [...imgHistory(), { role: 'assistant', blocks: [{ type: 'text', text: 'вижу' }] }, { role: 'user', blocks: [{ type: 'text', text: 'дальше' }] }];
+    for (const limit of [0, 400]) {
+      const sent = prepareForRequest(hist, limit);
+      const tr = sent[2].blocks[0];
+      assert.ok(!tr.image.data, `limit ${limit}: base64 остался`);
+      assert.ok(/view_image/.test(tr.content), `limit ${limit}: нет пометки`);
+      assert.ok(hist[2].blocks[0].image.data, 'исходная история изменилась');
+    }
+    // Текущий ход — картинка на месте.
+    assert.strictEqual(prepareForRequest(imgHistory(), 400)[2].blocks[0].image.data, 'QUJD');
+  });
+
+  await check('view_image сквозной: модель получила картинку, в журнал base64 не попал', async () => {
+    const config = { ...loadConfig(), provider: 'openai', baseUrl: llm.url('stream'), apiKey: 'test', workdir: picDir, permissionMode: 'ask', mcpServers: {} };
+    const session = new Session();
+    const events = [];
+    const agent = new Agent({ config, session, mcp: null, emit: (ev) => events.push(ev) });
+    const before = llm.requests.length;
+    await agent.send('посмотри на картинку');
+    const reqs = llm.requests.slice(before);
+    assert.strictEqual(reqs.length, 2, `запросов к модели: ${reqs.length}`);
+    assert.deepStrictEqual(reqs[1].images, [`data:image/png;base64,${PNG_1PX.toString('base64')}`], 'во втором запросе нет картинки');
+    const end = events.find((e) => e.type === 'tool_end' && e.name === 'view_image');
+    assert.ok(end && end.ok && end.image?.data, 'окно не получило картинку для превью');
+    const raw = fs.readFileSync(session.file, 'utf8');
+    assert.ok(!raw.includes(PNG_1PX.toString('base64')), 'base64 записан в журнал сессии');
+    assert.ok(raw.includes('"path":"pic.png"'), 'в журнале нет пути картинки');
+  });
+
   await llm.close();
 }
 

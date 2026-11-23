@@ -16,6 +16,15 @@ const { spawn } = require('node:child_process');
 const MAX_OUTPUT = 30000; // символов на результат инструмента
 const SKIP_DIRS = new Set(['node_modules', '.git', 'dist', 'out', '.venv', '__pycache__', '.cache']);
 
+// Картинки для view_image. Отправляем модели не больше IMAGE_MAX_SEND
+// (у Anthropic предел 5 МБ на картинку); в окне большие уменьшаются до
+// IMAGE_MAX_SIDE по длинной стороне — модели крупнее и не нужно.
+const IMAGE_TYPES = { '.png': 'image/png', '.jpg': 'image/jpeg', '.jpeg': 'image/jpeg', '.gif': 'image/gif', '.webp': 'image/webp' };
+const IMAGE_MAX_READ = 40 * 1048576;
+const IMAGE_MAX_SEND = 4.5 * 1048576;
+const IMAGE_SHRINK_BYTES = 1.5 * 1048576;
+const IMAGE_MAX_SIDE = 1600;
+
 function truncate(text, max = MAX_OUTPUT) {
   if (text.length <= max) return text;
   const head = text.slice(0, max);
@@ -306,6 +315,53 @@ const tools = [
       });
     },
   },
+
+  {
+    name: 'view_image',
+    description:
+      'Посмотреть картинку из рабочей папки (png, jpg, jpeg, gif, webp): модель увидит её содержимое. ' +
+      'Для схем и рисунков задач, фото, скриншотов. Не превращай картинку в base64 сам — вызывай этот инструмент.',
+    input_schema: {
+      type: 'object',
+      properties: { path: { type: 'string', description: 'Путь к картинке (относительно рабочей папки)' } },
+      required: ['path'],
+    },
+    async run(input, ctx) {
+      const abs = resolvePath(input, ctx);
+      const ext = path.extname(abs).toLowerCase();
+      const mediaType = IMAGE_TYPES[ext];
+      if (!mediaType) throw new Error(`Не картинка или формат не поддержан: ${ext || 'без расширения'}. Можно: ${Object.keys(IMAGE_TYPES).join(', ')}`);
+      const stat = await fsp.stat(abs);
+      if (!stat.isFile()) throw new Error(`Это не файл: ${abs}`);
+      if (stat.size > IMAGE_MAX_READ) throw new Error(`Картинка слишком большая: ${Math.round(stat.size / 1048576)} МБ (предел ${IMAGE_MAX_READ / 1048576} МБ)`);
+
+      let data = await fsp.readFile(abs);
+      let type = mediaType;
+      let note = '';
+      // В окне Electron большие картинки уменьшаются (nativeImage); в CLI — как есть.
+      const resized = ctx.resizeImage ? await ctx.resizeImage(data, { maxSide: IMAGE_MAX_SIDE, maxBytes: IMAGE_SHRINK_BYTES }) : null;
+      if (resized) {
+        data = resized.data;
+        type = resized.mediaType;
+        note = `, уменьшена до ${resized.width}×${resized.height}`;
+      }
+      if (data.length > IMAGE_MAX_SEND) {
+        throw new Error(
+          `Картинка ${Math.round(data.length / 1048576)} МБ — больше ${IMAGE_MAX_SEND / 1048576} МБ, модели её не отправить. Уменьшите её или откройте агента в окне (там картинки уменьшаются сами).`,
+        );
+      }
+      const rel = path.relative(ctx.workdir, abs) || path.basename(abs);
+      return {
+        // Модели нужно однозначно: изображение — это файл, который она открыла сама,
+        // а не вставка пользователя; пользователь видит то же превью в окне.
+        text:
+          `Файл ${rel} открыт (${Math.round(data.length / 1024)} КБ${note}). Его изображение передано тебе вместе с этим ` +
+          `результатом — ты его видишь. Пользователь видит ту же картинку в карточке инструмента. ` +
+          `Мелкий текст читай осторожно: если не уверен в цифрах или буквах, так и скажи, не додумывай.`,
+        image: { media_type: type, data: data.toString('base64'), path: rel, bytes: data.length },
+      };
+    },
+  },
 ];
 
 const byName = new Map(tools.map((t) => [t.name, t]));
@@ -324,4 +380,4 @@ async function runTool(name, input, ctx, extra = []) {
   return await tool.run(input, ctx);
 }
 
-module.exports = { tools, toolSchemas, runTool, resolvePath, truncate, MAX_OUTPUT };
+module.exports = { tools, toolSchemas, runTool, resolvePath, truncate, MAX_OUTPUT, IMAGE_MAX_SEND, IMAGE_MAX_SIDE };

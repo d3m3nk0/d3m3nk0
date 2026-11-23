@@ -100,8 +100,16 @@ function toAnthropicMessages(messages) {
     for (const b of m.blocks || []) {
       if (b.type === 'text' && b.text) content.push({ type: 'text', text: b.text });
       else if (b.type === 'tool_use') content.push({ type: 'tool_use', id: b.id, name: b.name, input: b.input || {} });
-      else if (b.type === 'tool_result')
-        content.push({ type: 'tool_result', tool_use_id: b.id, content: b.content || '', is_error: !!b.is_error });
+      else if (b.type === 'tool_result') {
+        // Anthropic принимает картинку прямо внутри tool_result.
+        const inner = b.image?.data
+          ? [
+              { type: 'text', text: b.content || '' },
+              { type: 'image', source: { type: 'base64', media_type: b.image.media_type, data: b.image.data } },
+            ]
+          : b.content || '';
+        content.push({ type: 'tool_result', tool_use_id: b.id, content: inner, is_error: !!b.is_error });
+      }
     }
     if (!content.length) continue;
     const last = out[out.length - 1];
@@ -214,7 +222,20 @@ function toOpenAIMessages(system, messages) {
       for (const t of toolResults) {
         out.push({ role: 'tool', tool_call_id: t.id, content: t.content || '' });
       }
-      if (texts.length) out.push({ role: 'user', content: texts.join('\n') });
+      // В OpenAI-формате ответ инструмента — только текст. Картинки идут
+      // следующим сообщением пользователя: так понимают почти все провайдеры.
+      const images = toolResults.filter((t) => t.image?.data);
+      if (images.length) {
+        const parts = [
+          {
+            type: 'text',
+            text: `[Не сообщение пользователя: это изображение файлов, которые ты открыл через view_image: ${images.map((t) => t.image.path).join(', ')}]`,
+          },
+        ];
+        for (const t of images) parts.push({ type: 'image_url', image_url: { url: `data:${t.image.media_type};base64,${t.image.data}` } });
+        if (texts.length) parts.push({ type: 'text', text: texts.join('\n') });
+        out.push({ role: 'user', content: parts });
+      } else if (texts.length) out.push({ role: 'user', content: texts.join('\n') });
     }
   }
   return out;
@@ -355,6 +376,10 @@ async function runTurn(opts) {
   return runAnthropic(opts);
 }
 
+// Картинку модель считает не по длине base64, а по пикселям:
+// до 1600 px это порядка полутора-двух тысяч токенов.
+const IMAGE_TOKENS = 1600;
+
 function estimateTokens(text) {
   return Math.ceil(String(text).length / 4);
 }
@@ -365,10 +390,10 @@ function estimateMessagesTokens(messages, system) {
     for (const b of m.blocks || []) {
       if (b.type === 'text') n += estimateTokens(b.text);
       else if (b.type === 'tool_use') n += estimateTokens(JSON.stringify(b.input || {})) + 20;
-      else if (b.type === 'tool_result') n += estimateTokens(b.content || '') + 10;
+      else if (b.type === 'tool_result') n += estimateTokens(b.content || '') + 10 + (b.image?.data ? IMAGE_TOKENS : 0);
     }
   }
   return n;
 }
 
-module.exports = { runTurn, endpoint, estimateTokens, estimateMessagesTokens };
+module.exports = { runTurn, endpoint, estimateTokens, estimateMessagesTokens, toOpenAIMessages, toAnthropicMessages, IMAGE_TOKENS };

@@ -182,13 +182,27 @@ function addToolCard(id, name, input) {
   scrollDown();
 }
 
-function updateToolCard(id, ok, output) {
+function updateToolCard(id, ok, output, image) {
   const c = toolCards.get(id);
   if (!c) return;
   c.status.textContent = ok ? 'готово' : 'ошибка';
   c.status.classList.add(ok ? 'ok' : 'err');
   c.out.textContent = output || '(пусто)';
   c.details.open = !ok;
+  // view_image: показать, что именно увидела модель. В старых сессиях
+  // данных картинки нет (в журнал она не пишется) — только подпись.
+  if (image) {
+    if (image.data && /^image\/(png|jpeg|gif|webp)$/.test(image.media_type)) {
+      const img = el('img', 'tool-image');
+      img.alt = image.path || 'картинка';
+      img.src = `data:${image.media_type};base64,${image.data}`;
+      img.onclick = () => img.classList.toggle('big');
+      img.title = 'Клик — крупнее';
+      c.card.insertBefore(img, c.details);
+    } else {
+      c.card.insertBefore(el('div', 'tool-image-note', `🖼 ${image.path || 'картинка'} (в истории не хранится)`), c.details);
+    }
+  }
   scrollDown();
 }
 
@@ -263,7 +277,7 @@ function renderHistory(messages) {
       } else if (b.type === 'tool_use') {
         addToolCard(b.id, b.name, b.input);
         const res = resultsById.get(b.id);
-        if (res) updateToolCard(b.id, !res.is_error, res.content);
+        if (res) updateToolCard(b.id, !res.is_error, res.content, res.image);
       }
     }
   }
@@ -378,7 +392,7 @@ window.d3.onEvent((ev) => {
       break;
     case 'tool_end':
       removePendingTool(ev.id, ev.name); // вызов отклонён — карточки не было
-      updateToolCard(ev.id, ev.ok, ev.output);
+      updateToolCard(ev.id, ev.ok, ev.output, ev.image);
       break;
     case 'turn_start':
       endReasoning(); // у каждого шага свой блок рассуждения

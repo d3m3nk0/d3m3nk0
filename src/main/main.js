@@ -7,7 +7,7 @@
  * Это принципиально: у рендерера нет доступа к файловой системе и процессам.
  */
 
-const { app, BrowserWindow, ipcMain, Menu, dialog, shell, nativeTheme } = require('electron');
+const { app, BrowserWindow, ipcMain, Menu, dialog, shell, nativeTheme, nativeImage } = require('electron');
 const fs = require('node:fs');
 const os = require('node:os');
 const path = require('node:path');
@@ -27,6 +27,26 @@ let mcp = new McpManager();
 let agent = null;
 let mcpReport = []; // последний отчёт подключения MCP — для раздела «Плагины»
 const pendingPermissions = new Map();
+
+/**
+ * Уменьшить картинку для view_image (nativeImage есть только в Electron).
+ * null — картинка и так подходит (или Electron её не понял: отправим как есть).
+ */
+function resizeImage(buf, { maxSide, maxBytes }) {
+  const img = nativeImage.createFromBuffer(buf);
+  if (img.isEmpty()) return null;
+  const { width, height } = img.getSize();
+  const long = Math.max(width, height);
+  if (long <= maxSide && buf.length <= maxBytes) return null;
+  const k = Math.min(1, maxSide / long);
+  const w = Math.max(1, Math.round(width * k));
+  const h = Math.max(1, Math.round(height * k));
+  const small = k < 1 ? img.resize({ width: w, height: h, quality: 'good' }) : img;
+  // PNG бережёт тонкие линии схем; если он всё ещё тяжёлый — JPEG.
+  const png = small.toPNG();
+  if (png.length <= maxBytes) return { data: png, mediaType: 'image/png', width: w, height: h };
+  return { data: small.toJPEG(85), mediaType: 'image/jpeg', width: w, height: h };
+}
 
 function emit(event) {
   if (win && !win.isDestroyed()) win.webContents.send('agent:event', event);
@@ -89,7 +109,7 @@ async function doBuildAgent({ history = [] } = {}) {
         (kTokens > 40 ? ' — много, ограничьте набор через "tools" в настройках' : ''),
     });
   }
-  agent = new Agent({ config, session, mcp, emit, askPermission });
+  agent = new Agent({ config, session, mcp, emit, askPermission, imageResizer: resizeImage });
   agent.loadHistory(history);
   emit({ type: 'mcp_status', servers: mcp.status });
   return agent;

@@ -45,22 +45,39 @@ function lastUserTurnIndex(messages) {
  * (до последнего сообщения пользователя) обрезаются; всё, что получено в
  * текущем ходе, уходит целиком — иначе модель не смогла бы прочитать
  * только что запрошенный файл. Исходный массив не меняется.
+ *
+ * Картинки (view_image) из прошлых ходов не отправляются вовсе — даже при
+ * limit 0: иначе каждая открытая картинка ехала бы в каждом запросе. Вместо
+ * неё модель видит пометку и может открыть картинку снова.
  */
 function prepareForRequest(messages, limit) {
-  if (!limit) return messages;
   const boundary = lastUserTurnIndex(messages);
   return messages.map((m, i) => {
     if (i >= boundary || m.role !== 'user') return m;
     let changed = false;
     const blocks = (m.blocks || []).map((b) => {
       if (b.type !== 'tool_result') return b;
-      const content = truncateToolResult(b.content, limit);
-      if (content === b.content) return b;
-      changed = true;
-      return { ...b, content };
+      let next = b;
+      if (b.image?.data) {
+        next = {
+          ...b,
+          image: { ...b.image, data: undefined },
+          content: `${b.content || ''}\n${pastImageNote(b.image.path)}`,
+        };
+      }
+      if (limit) {
+        const content = truncateToolResult(next.content, limit);
+        if (content !== next.content) next = { ...next, content };
+      }
+      if (next !== b) changed = true;
+      return next;
     });
     return changed ? { ...m, blocks } : m;
   });
+}
+
+function pastImageNote(p) {
+  return `[картинка ${p} была показана в прошлом ходе; чтобы посмотреть снова — вызови view_image]`;
 }
 
 /** Токены схем инструментов (встроенные + MCP), которые уходят в каждый запрос. */
@@ -68,4 +85,4 @@ function toolSchemaTokens(schemas) {
   return estimateTokens(JSON.stringify(schemas || []));
 }
 
-module.exports = { truncateToolResult, prepareForRequest, lastUserTurnIndex, toolSchemaTokens, HEAD_TOKENS, TAIL_TOKENS };
+module.exports = { truncateToolResult, prepareForRequest, lastUserTurnIndex, toolSchemaTokens, pastImageNote, HEAD_TOKENS, TAIL_TOKENS };

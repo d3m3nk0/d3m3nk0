@@ -20,7 +20,7 @@ const { toolSchemas, runTool } = require('./tools');
 const { prepareForRequest, toolSchemaTokens } = require('./context');
 
 const MAX_STEPS = 40;
-const READ_ONLY_TOOLS = new Set(['read_file', 'list_dir', 'glob_search', 'grep_search']);
+const READ_ONLY_TOOLS = new Set(['read_file', 'list_dir', 'glob_search', 'grep_search', 'view_image']);
 
 const RULES_FILE = 'AGENTS.md';
 const RULES_MAX_CHARS = 8000; // ~2000 токенов: правила уходят в каждый запрос
@@ -67,6 +67,14 @@ function buildSystemPrompt(config) {
   return lines.join('\n');
 }
 
+/** Копия сообщения без данных картинок (для журнала сессии). */
+function withoutImageData(message) {
+  return {
+    ...message,
+    blocks: (message.blocks || []).map((b) => (b.image?.data ? { ...b, image: { ...b.image, data: undefined } } : b)),
+  };
+}
+
 function needsApproval(mode, toolName) {
   if (mode === 'yolo') return false;
   if (mode === 'allow-edits') return toolName === 'run_command' || toolName.startsWith('mcp__');
@@ -76,8 +84,9 @@ function needsApproval(mode, toolName) {
 }
 
 class Agent {
-  constructor({ config, session, mcp, emit, askPermission }) {
+  constructor({ config, session, mcp, emit, askPermission, imageResizer }) {
     this.config = config;
+    this.imageResizer = imageResizer || null; // в окне — уменьшение картинок через nativeImage
     this.session = session;
     this.mcp = mcp;
     this.emit = emit || (() => {});
@@ -228,6 +237,7 @@ class Agent {
               workdir: this.config.workdir,
               allowOutside: this.config.permissionMode === 'yolo',
               signal: sig,
+              resizeImage: this.imageResizer,
             };
             output = call.name.startsWith('mcp__')
               ? await this.mcp.call(call.name, call.input)
@@ -236,13 +246,17 @@ class Agent {
             output = `Ошибка инструмента: ${e.message}`;
             isError = true;
           }
-          results.push({ type: 'tool_result', id: call.id, content: output, is_error: isError });
-          this.emit({ type: 'tool_end', id: call.id, name: call.name, ok: !isError, output });
+          // view_image возвращает { text, image }: картинка едет модели отдельным блоком.
+          const image = output && typeof output === 'object' ? output.image : null;
+          const text = output && typeof output === 'object' ? String(output.text ?? '') : output;
+          results.push({ type: 'tool_result', id: call.id, content: text, is_error: isError, ...(image ? { image } : {}) });
+          this.emit({ type: 'tool_end', id: call.id, name: call.name, ok: !isError, output: text, ...(image ? { image } : {}) });
         }
 
         const toolMessage = { role: 'user', blocks: results };
         this.messages.push(toolMessage);
-        this.session?.append({ kind: 'message', message: toolMessage });
+        // В журнал — без base64: картинка остаётся на диске, в истории только путь.
+        this.session?.append({ kind: 'message', message: withoutImageData(toolMessage) });
       }
     } catch (e) {
       const aborted = e.name === 'AbortError';
@@ -272,4 +286,4 @@ class Agent {
   }
 }
 
-module.exports = { Agent, buildSystemPrompt, loadProjectRules, needsApproval, RULES_MAX_CHARS };
+module.exports = { Agent, buildSystemPrompt, loadProjectRules, needsApproval, withoutImageData, RULES_MAX_CHARS };

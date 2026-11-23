@@ -14,6 +14,7 @@
  *       последнее сообщение — результат инструмента (role: tool) — AFTER_TOOL_TEXT
  *     иначе по тексту последнего сообщения пользователя:
  *       содержит «запиши» — вызов write_file (требует подтверждения в режиме ask)
+ *       содержит «посмотри» — вызов view_image для pic.png
  *       содержит «жди»    — пауза headerDelayMs до заголовков, потом обычный ответ
  *       содержит «долго»  — длинный поток (slowChunks кусков), для «Стоп»
  *       содержит «оборви» — несколько кусков и обрыв соединения
@@ -28,6 +29,7 @@ const http = require('node:http');
 const STREAM_CHUNKS = ['Первый ', 'кусок, ', 'второй ', 'кусок, ', 'третий кусок.'];
 const WHOLE_TEXT = 'Ответ целиком без стриминга.';
 const AFTER_TOOL_TEXT = 'Продолжаю после инструмента.';
+const VIEW_CALL = { name: 'view_image', arguments: JSON.stringify({ path: 'pic.png' }) };
 const WRITE_CALL = { name: 'write_file', arguments: JSON.stringify({ path: 'denied.txt', content: 'не должно появиться' }) };
 
 const sse = (o) => `data: ${JSON.stringify(o)}\n\n`;
@@ -61,7 +63,10 @@ function startFakeLlm(opts = {}) {
     for await (const c of req) body += c;
     const payload = JSON.parse(body || '{}');
     const mode = req.url.split('/')[1];
-    requests.push({ mode, stream: !!payload.stream, text: lastUserText(payload) });
+    // Для проверок картинок: порядок ролей и data-URL всех image_url в запросе.
+    const msgsIn = payload.messages || [];
+    const images = msgsIn.flatMap((m) => (Array.isArray(m.content) ? m.content : []).filter((c) => c.type === 'image_url').map((c) => c.image_url.url));
+    requests.push({ mode, stream: !!payload.stream, text: lastUserText(payload), roles: msgsIn.map((m) => m.role), images });
 
     const whole = () => {
       res.writeHead(200, { 'content-type': 'application/json' });
@@ -93,6 +98,11 @@ function startFakeLlm(opts = {}) {
     // После результата инструмента (в том числе отказа) модель продолжает ход текстом.
     if (msgs[msgs.length - 1]?.role === 'tool') {
       res.write(delta(AFTER_TOOL_TEXT));
+      return done();
+    }
+    if (/посмотри/.test(text)) {
+      res.write(sse({ choices: [{ index: 0, delta: { tool_calls: [{ index: 0, id: 'call_view', type: 'function', function: VIEW_CALL }] } }] }));
+      res.write(sse({ choices: [{ index: 0, delta: {}, finish_reason: 'tool_calls' }] }));
       return done();
     }
     if (/запиши/.test(text)) {
