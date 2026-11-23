@@ -17,6 +17,7 @@ const fs = require('node:fs');
 const path = require('node:path');
 const { runTurn, estimateMessagesTokens } = require('./providers');
 const { runWithRetry } = require('./resilience');
+const { isAlwaysAllowed, suggestRule, sameRule } = require('./permissions');
 const { toolSchemas, runTool } = require('./tools');
 const { prepareForRequest, toolSchemaTokens } = require('./context');
 
@@ -76,8 +77,9 @@ function withoutImageData(message) {
   };
 }
 
-function needsApproval(mode, toolName) {
+function needsApproval(mode, toolName, input, rules) {
   if (mode === 'yolo') return false;
+  if (isAlwaysAllowed(toolName, input, rules)) return false; // «Разрешать всегда»
   if (mode === 'allow-edits') return toolName === 'run_command' || toolName.startsWith('mcp__');
   // 'ask'
   if (READ_ONLY_TOOLS.has(toolName)) return false;
@@ -85,7 +87,8 @@ function needsApproval(mode, toolName) {
 }
 
 class Agent {
-  constructor({ config, session, mcp, emit, askPermission, imageResizer }) {
+  constructor({ config, session, mcp, emit, askPermission, imageResizer, onConfigChange }) {
+    this.onConfigChange = onConfigChange || (() => {}); // сохранить правку настроек (окно — в config.json)
     this.config = config;
     this.imageResizer = imageResizer || null; // в окне — уменьшение картинок через nativeImage
     this.session = session;
@@ -100,6 +103,15 @@ class Agent {
 
   loadHistory(messages) {
     this.messages = messages.slice();
+  }
+
+  /** Добавить правило «Разрешать всегда» и сохранить его в настройках. */
+  addAlwaysRule({ rule, label }) {
+    const rules = Array.isArray(this.config.alwaysAllow) ? this.config.alwaysAllow : [];
+    if (rules.some((r) => sameRule(r, rule))) return;
+    this.config = { ...this.config, alwaysAllow: [...rules, rule] };
+    this.onConfigChange({ alwaysAllow: this.config.alwaysAllow });
+    this.emit({ type: 'info', message: `Теперь без вопроса: ${label}. Отменить — Настройки → Работа и доступ.` });
   }
 
   /** Сменить модель на лету: история и MCP остаются, промпт пересобирается. */
@@ -227,9 +239,13 @@ class Agent {
 
         const results = [];
         for (const call of toolUses) {
-          const approved = needsApproval(this.config.permissionMode, call.name)
-            ? await this.askPermission({ id: call.id, name: call.name, input: call.input })
+          const suggestion = suggestRule(call.name, call.input);
+          const answer = needsApproval(this.config.permissionMode, call.name, call.input, this.config.alwaysAllow)
+            ? await this.askPermission({ id: call.id, name: call.name, input: call.input, always: suggestion?.label || null })
             : true;
+          // 'always' — «Разрешать всегда»: правило запоминается и действует дальше.
+          if (answer === 'always' && suggestion) this.addAlwaysRule(suggestion);
+          const approved = answer === true || answer === 'always';
 
           if (!approved) {
             const denied = { type: 'tool_result', id: call.id, content: 'Пользователь отклонил вызов инструмента.', is_error: true };

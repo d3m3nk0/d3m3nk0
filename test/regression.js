@@ -663,6 +663,44 @@ async function main() {
     assert.deepStrictEqual(fallbackModels({ model: 'x', baseUrl: 'https://api.anthropic.com', fallbackModels: null }), []);
   });
 
+  /* ------------------------- «Разрешать всегда» ------------------------- */
+
+  const perms = require('../src/core/permissions');
+  const { needsApproval } = require('../src/core/agent');
+
+  await check('разрешать всегда: правило на программу; склейка и перенаправление — всё равно спросить', () => {
+    const s = perms.suggestRule('run_command', { command: 'RDM\\outils\\generer.cmd --type torsion' });
+    assert.deepStrictEqual(s.rule, { tool: 'run_command', program: 'rdm\\outils\\generer.cmd' });
+    const rules = [s.rule];
+    const ask = (command) => needsApproval('allow-edits', 'run_command', { command }, rules);
+    assert.strictEqual(ask('RDM\\outils\\generer.cmd --n 2'), false);
+    assert.strictEqual(ask('rdm/outils/GENERER.cmd --seed 1'), false, 'регистр и / не важны');
+    for (const bad of ['RDM\\outils\\generer.cmd & del *', 'RDM\\outils\\generer.cmd | x', 'RDM\\outils\\generer.cmd > a.txt', 'RDM\\outils\\generer.cmd; rm x', 'RDM\\outils\\generer.cmd $(evil)', 'RDM\\outils\\generer.cmd\ndel *']) {
+      assert.strictEqual(ask(bad), true, `пропустил без вопроса: ${JSON.stringify(bad)}`);
+    }
+    assert.strictEqual(ask('python evil.py'), true, 'другая программа прошла');
+    assert.strictEqual(perms.suggestRule('run_command', { command: 'a.cmd && b' }), null, 'для склейки предложено правило');
+    assert.strictEqual(perms.programOf('"C:\\Program Files\\x.exe" -v'), 'c:\\program files\\x.exe');
+    assert.strictEqual(needsApproval('ask', 'mcp__rea__open_binary', {}, [{ tool: 'mcp__rea__open_binary' }]), false);
+  });
+
+  await check('разрешать всегда: сквозной — второй раз агент не спрашивает, правило сохранено', async () => {
+    const wd = fs.mkdtempSync(path.join(TMP_ROOT, 'always-'));
+    const config = { ...loadConfig(), provider: 'openai', baseUrl: llm.url('stream'), apiKey: 'test', workdir: wd, permissionMode: 'ask', mcpServers: {}, alwaysAllow: [] };
+    const asked = [];
+    const saved = [];
+    const agent = new Agent({
+      config, session: null, mcp: null,
+      askPermission: async (req) => { asked.push(req.always); return 'always'; },
+      onConfigChange: (patch) => saved.push(patch),
+    });
+    await agent.send('запиши файл');
+    await agent.send('запиши ещё раз');
+    assert.deepStrictEqual(asked, ['все вызовы write_file'], `спрашивал: ${JSON.stringify(asked)}`);
+    assert.deepStrictEqual(saved.at(-1), { alwaysAllow: [{ tool: 'write_file' }] });
+    assert.ok(fs.existsSync(path.join(wd, 'denied.txt')), 'файл не записан');
+  });
+
   /* ------------------------------ read_pdf (PDF) ------------------------------- */
 
   /** Настоящий маленький PDF: по строке текста на страницу, смещения xref посчитаны. */

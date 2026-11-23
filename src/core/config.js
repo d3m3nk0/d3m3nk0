@@ -35,6 +35,8 @@ const DEFAULTS = {
   idleTimeoutMs: 90000,
   retryDelayMs: 2000,
   fallbackModels: null,
+  // «Разрешать всегда» (permissions.js): [{ tool }, { tool: 'run_command', program }]
+  alwaysAllow: [],
 };
 
 function ensureHome() {

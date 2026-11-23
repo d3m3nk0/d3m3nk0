@@ -214,7 +214,19 @@ function showPermission(req) {
   const actions = el('div', 'perm-actions');
   const deny = el('button', 'ghost', 'Отклонить');
   const allow = el('button', null, 'Разрешить');
-  actions.append(deny, allow);
+  actions.append(deny);
+  // «Разрешать всегда» предлагается не всегда: команда со склейкой (&, |, >…)
+  // спрашивает каждый раз — правило на неё не создаётся.
+  if (req.always) {
+    const always = el('button', 'ghost', `Разрешать всегда: ${req.always}`);
+    always.title = 'Такие вызовы больше не будут спрашивать. Отменить — Настройки → Работа и доступ';
+    always.onclick = () => {
+      window.d3.replyPermission(req.id, true, true);
+      box.remove();
+    };
+    actions.append(always);
+  }
+  actions.append(allow);
   box.append(actions);
 
   deny.onclick = () => {
@@ -287,6 +299,34 @@ function renderHistory(messages) {
 /* ------------------------------ настройки -------------------------------- */
 
 let currentConfig = null;
+
+// Правила «Разрешать всегда» в настройках: правятся крестиком, сохраняются по «Сохранить».
+let alwaysDraft = [];
+
+function renderAlways() {
+  const list = $('always-list');
+  list.replaceChildren();
+  if (!alwaysDraft.length) {
+    list.append(el('div', 'pane-note', 'Пока ничего: агент спрашивает про каждую команду.'));
+    return;
+  }
+  alwaysDraft.forEach((r, i) => {
+    const row = el('div', 'plugin');
+    const text = el('div', 'plugin-text');
+    text.append(el('div', 'plugin-name', r.tool === 'run_command' ? r.program : r.tool));
+    text.append(el('div', 'plugin-sub', r.tool === 'run_command' ? 'команда без вопроса' : 'инструмент без вопроса'));
+    const del = el('button', 'ghost icon-btn', '✕');
+    del.type = 'button';
+    del.title = 'Снова спрашивать';
+    del.setAttribute('aria-label', `Убрать правило ${r.program || r.tool}`);
+    del.onclick = () => {
+      alwaysDraft.splice(i, 1);
+      renderAlways();
+    };
+    row.append(text, del);
+    list.append(row);
+  });
+}
 let mcpToolsKnown = false;
 
 async function refreshConfig() {
@@ -308,6 +348,8 @@ async function refreshConfig() {
   $('s-fallback').value = Array.isArray(cfg.fallbackModels) ? cfg.fallbackModels.join('\n') : '';
   $('s-workdir').value = cfg.workdir;
   $('s-permission').value = cfg.permissionMode;
+  alwaysDraft = Array.isArray(cfg.alwaysAllow) ? cfg.alwaysAllow.slice() : [];
+  renderAlways();
   $('s-mcp').value = JSON.stringify(cfg.mcpServers || {}, null, 2);
 }
 
@@ -811,6 +853,7 @@ $('save-settings').onclick = async (e) => {
     })(),
     workdir: $('s-workdir').value.trim(),
     permissionMode: $('s-permission').value,
+    alwaysAllow: alwaysDraft,
     mcpServers,
   };
   await window.d3.setConfig(patch);

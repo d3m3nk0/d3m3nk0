@@ -19,7 +19,7 @@ contextBridge.exposeInMainWorld('d3', {
   mcpStatus: () => ipcRenderer.invoke('mcp:status'),
   plugins: () => ipcRenderer.invoke('mcp:plugins'),
   setTheme: (theme) => ipcRenderer.invoke('theme:set', theme),
-  replyPermission: (id, approved) => ipcRenderer.send('permission:reply', { id, approved }),
+  replyPermission: (id, approved, always = false) => ipcRenderer.send('permission:reply', { id, approved, always }),
   onEvent: (cb) => ipcRenderer.on('agent:event', (_e, ev) => cb(ev)),
   onPermission: (cb) => ipcRenderer.on('permission:request', (_e, req) => cb(req)),
 });

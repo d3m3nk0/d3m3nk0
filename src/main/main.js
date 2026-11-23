@@ -110,7 +110,12 @@ async function doBuildAgent({ history = [] } = {}) {
         (kTokens > 40 ? ' — много, ограничьте набор через "tools" в настройках' : ''),
     });
   }
-  agent = new Agent({ config, session, mcp, emit, askPermission, imageResizer: resizeImage });
+  agent = new Agent({
+    config, session, mcp, emit, askPermission, imageResizer: resizeImage,
+    onConfigChange: (patch) => {
+      config = saveConfig(patch);
+    },
+  });
   agent.loadHistory(history);
   emit({ type: 'mcp_status', servers: mcp.status });
   return agent;
@@ -437,10 +442,10 @@ ipcMain.handle('theme:set', (_e, theme) => {
 });
 ipcMain.handle('mcp:plugins', () => describePlugins(config.mcpServers, mcpReport));
 
-ipcMain.on('permission:reply', (_e, { id, approved }) => {
+ipcMain.on('permission:reply', (_e, { id, approved, always }) => {
   const resolve = pendingPermissions.get(id);
   if (resolve) {
     pendingPermissions.delete(id);
-    resolve(!!approved);
+    resolve(always ? 'always' : !!approved);
   }
 });
