@@ -26,7 +26,7 @@ process.env.D3M3NK0_HOME = HOME; // до require ядра: config.js читае�
 const { startFakeLlm, STREAM_CHUNKS, WHOLE_TEXT, AFTER_TOOL_TEXT } = require('./helpers/fake-llm');
 const { loadConfig } = require('../src/core/config');
 const { Session } = require('../src/core/session');
-const { Agent, buildSystemPrompt, loadProjectRules, RULES_MAX_CHARS } = require('../src/core/agent');
+const { Agent, buildSystemPrompt, loadProjectRules, projectRuleFiles, RULES_FILES, RULES_MAX_CHARS } = require('../src/core/agent');
 const { estimateTokens, estimateMessagesTokens } = require('../src/core/providers');
 const { truncateToolResult, prepareForRequest, toolSchemaTokens } = require('../src/core/context');
 
@@ -597,6 +597,42 @@ async function main() {
     const rules = loadProjectRules(rulesDir);
     assert.ok(rules.length < RULES_MAX_CHARS + 200, `правила не обрезаны: ${rules.length}`);
     assert.ok(/обрезан/.test(rules), 'нет пометки об обрезке');
+  });
+
+  await check('D3M3NK0.md: несколько файлов идут в промпт в порядке приоритета', () => {
+    const dir = path.join(TMP_ROOT, 'rules-multi');
+    fs.mkdirSync(dir, { recursive: true });
+    // Пишем в обратном порядке: проверяется не порядок создания, а приоритет.
+    fs.writeFileSync(path.join(dir, 'CLAUDE.md'), 'МЕТКА-КЛОД\n');
+    fs.writeFileSync(path.join(dir, 'AGENTS.md'), 'МЕТКА-АГЕНТ\n');
+    fs.writeFileSync(path.join(dir, 'D3M3NK0.md'), 'МЕТКА-Д3\n');
+
+    assert.deepStrictEqual(projectRuleFiles(dir).map((f) => f.name), ['D3M3NK0.md', 'AGENTS.md', 'CLAUDE.md']);
+    assert.deepStrictEqual([...RULES_FILES], ['D3M3NK0.md', 'AGENTS.md', 'CLAUDE.md'], 'порядок приоритета изменён');
+
+    const sys = buildSystemPrompt({ ...baseCfg, workdir: dir });
+    const d3 = sys.indexOf('МЕТКА-Д3');
+    const agents = sys.indexOf('МЕТКА-АГЕНТ');
+    const claude = sys.indexOf('МЕТКА-КЛОД');
+    assert.ok(d3 > 0 && agents > d3 && claude > agents, `порядок не сохранён: ${d3}, ${agents}, ${claude}`);
+    for (const name of ['D3M3NK0.md', 'AGENTS.md', 'CLAUDE.md']) {
+      assert.ok(sys.includes(`## ${name}`), `нет заголовка ${name}`);
+    }
+
+    // Правила попадают в промпт при создании агента, а не только в buildSystemPrompt.
+    const agent = new Agent({ config: { ...baseCfg, workdir: dir }, session: null, mcp: null });
+    assert.ok(agent.system.includes('МЕТКА-Д3'), 'агент не прочитал правила проекта');
+  });
+
+  await check('D3M3NK0.md: каталог с таким именем и пустой файл не считаются правилами', () => {
+    const dir = path.join(TMP_ROOT, 'rules-edge');
+    fs.mkdirSync(path.join(dir, 'D3M3NK0.md'), { recursive: true }); // каталог, не файл
+    fs.writeFileSync(path.join(dir, 'AGENTS.md'), '   \n\n'); // пустой
+    fs.writeFileSync(path.join(dir, 'CLAUDE.md'), 'МЕТКА-ТОЛЬКО-КЛОД\n');
+    assert.deepStrictEqual(projectRuleFiles(dir).map((f) => f.name), ['CLAUDE.md']);
+    const sys = buildSystemPrompt({ ...baseCfg, workdir: dir });
+    assert.ok(/МЕТКА-ТОЛЬКО-КЛОД/.test(sys), 'правила из CLAUDE.md не попали в промпт');
+    assert.ok(!/## D3M3NK0\.md/.test(sys), 'каталог попал в промпт как файл правил');
   });
 
   await check('test/smoke.js по-прежнему проходит (границы рабочей папки)', async () => {

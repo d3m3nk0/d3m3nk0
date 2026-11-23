@@ -24,23 +24,44 @@ const { prepareForRequest, toolSchemaTokens } = require('./context');
 const MAX_STEPS = 40;
 const READ_ONLY_TOOLS = new Set(['read_file', 'list_dir', 'glob_search', 'grep_search', 'view_image', 'read_pdf']);
 
-const RULES_FILE = 'AGENTS.md';
+const RULES_FILES = ['D3M3NK0.md', 'AGENTS.md', 'CLAUDE.md'];
 const RULES_MAX_CHARS = 8000; // ~2000 токенов: правила уходят в каждый запрос
 
 /**
- * Правила пользователя из AGENTS.md в корне рабочей папки (как в OpenCode).
- * Нет файла или его не прочитать — пустая строка; длинный файл обрезается.
+ * Файлы инструкций проекта в рабочей папке, в порядке приоритета.
+ *
+ * Своё имя первое: правила домена (сопромат, список реверс-утилит, стиль кода)
+ * живут в файле проекта, а не в коде агента. Следующие два — чтобы проект можно
+ * было открыть уже настроенным тем же AGENTS.md / CLAUDE.md, что и у других
+ * агентов. Каталог с таким именем или нечитаемый файл просто пропускаем.
+ */
+function projectRuleFiles(workdir) {
+  const found = [];
+  for (const name of RULES_FILES) {
+    try {
+      const file = path.join(workdir, name);
+      if (!fs.statSync(file).isFile()) continue;
+      const text = fs.readFileSync(file, 'utf8').trim();
+      if (text) found.push({ name, text });
+    } catch {
+      // файла нет или нет прав — работаем дальше без него
+    }
+  }
+  return found;
+}
+
+/**
+ * Правила проекта склеенные в порядке приоритета. Несколько файлов идут под
+ * своими заголовками: если правила противоречат, модель видит, откуда какое.
+ * Длиннее RULES_MAX_CHARS — обрезаем с пометкой.
  */
 function loadProjectRules(workdir) {
   if (!workdir) return '';
-  let text;
-  try {
-    text = fs.readFileSync(path.join(workdir, RULES_FILE), 'utf8').trim();
-  } catch {
-    return '';
-  }
+  const found = projectRuleFiles(workdir);
+  if (!found.length) return '';
+  let text = found.map((f) => `## ${f.name}\n\n${f.text}`).join('\n\n');
   if (text.length > RULES_MAX_CHARS) {
-    text = `${text.slice(0, RULES_MAX_CHARS)}\n[…${RULES_FILE} обрезан: длиннее ${RULES_MAX_CHARS} символов]`;
+    text = `${text.slice(0, RULES_MAX_CHARS)}\n[…правила обрезаны: длиннее ${RULES_MAX_CHARS} символов]`;
   }
   return text;
 }
@@ -64,7 +85,7 @@ function buildSystemPrompt(config) {
     `- Провайдер модели: ${config.provider}, модель: ${config.model}`,
   ];
   if (rules) {
-    lines.push('', `Правила пользователя из ${RULES_FILE} (выполняй их всегда):`, '', rules);
+    lines.push('', 'Правила проекта из рабочей папки (выполняй их всегда):', '', rules);
   }
   return lines.join('\n');
 }
@@ -368,4 +389,4 @@ class Agent {
   }
 }
 
-module.exports = { Agent, LoopGuard, buildSystemPrompt, loadProjectRules, needsApproval, withoutImageData, RULES_MAX_CHARS };
+module.exports = { Agent, LoopGuard, buildSystemPrompt, loadProjectRules, projectRuleFiles, needsApproval, withoutImageData, RULES_FILES, RULES_MAX_CHARS };
