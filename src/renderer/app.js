@@ -379,8 +379,9 @@ async function refreshSessions() {
   const box = $('sessions');
   box.replaceChildren();
   for (const s of list) {
-    const btn = el('button', 'session', s.title || s.id);
-    btn.title = `${s.id}\nПравый клик — закрепить или удалить`;
+    // Короткое имя (session-name.js) — в списке; начало сообщения и id — при наведении.
+    const btn = el('button', 'session', s.name || s.title || s.id);
+    btn.title = `${s.title ? `${s.title}\n` : ''}${s.id}\nПравый клик — закрепить или удалить`;
     if (s.pinned) btn.classList.add('pinned');
     if (s.current) btn.classList.add('active');
     btn.onclick = async () => {

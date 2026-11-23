@@ -6,11 +6,53 @@
  * Формат строки: {"ts": 1234, "entry": {...}}
  * Внутри entry — канонические сообщения агента, чтобы историю можно было
  * восстановить и продолжить разговор.
+ *
+ * Имя сессии: entry { kind: 'meta', meta: { name } } — пишется ОДИН раз, по
+ * первому сообщению пользователя (session-name.js, без модели). Действует первая
+ * такая запись; последующие сообщения имя не меняют. Старый код запись meta
+ * просто пропускает: load() берёт только kind: 'message'.
  */
 
 const fs = require('node:fs');
 const path = require('node:path');
 const { SESSIONS_DIR, ensureHome } = require('./config');
+const { sessionName } = require('./session-name');
+
+/** Сообщение пользователя с текстом (а не результаты инструментов). */
+function isUserText(entry) {
+  return entry?.kind === 'message' && entry.message?.role === 'user' && (entry.message.blocks || []).some((b) => b.type === 'text');
+}
+
+function textOf(message) {
+  return (message.blocks || [])
+    .filter((b) => b.type === 'text')
+    .map((b) => b.text)
+    .join(' ');
+}
+
+/** Из журнала: сохранённое имя (первая запись meta) и текст первого сообщения пользователя. */
+function scanJournal(file) {
+  const out = { name: null, firstText: null };
+  let raw = '';
+  try {
+    raw = fs.readFileSync(file, 'utf8');
+  } catch {
+    return out;
+  }
+  for (const line of raw.split('\n')) {
+    if (!line.trim()) continue;
+    let entry;
+    try {
+      entry = JSON.parse(line).entry;
+    } catch {
+      continue; // битая строка не должна ломать чтение
+    }
+    if (entry?.kind === 'meta' && out.name == null && typeof entry.meta?.name === 'string') out.name = entry.meta.name;
+    else if (out.firstText == null && isUserText(entry)) out.firstText = textOf(entry.message);
+    if (out.name != null && out.firstText != null) break;
+  }
+  return out;
+}
 
 // Закреплённые сессии: массив id в sessions/pinned.json (не .jsonl — в список не попадает).
 const PINNED_FILE = path.join(SESSIONS_DIR, 'pinned.json');
@@ -47,10 +89,32 @@ class Session {
     ensureHome();
     this.id = id || newId();
     this.file = path.join(SESSIONS_DIR, `${this.id}.jsonl`);
+    this.meta = { name: null };
+    this.named = false; // имя уже определено (или его не из чего сделать) — больше не трогаем
   }
 
   append(entry) {
     fs.appendFileSync(this.file, JSON.stringify({ ts: Date.now(), entry }) + '\n', 'utf8');
+    if (!this.named && isUserText(entry)) this.ensureName();
+  }
+
+  /**
+   * Имя по ПЕРВОМУ сообщению пользователя. Сессия могла быть открыта заново
+   * (new Session(id) для старого журнала) — поэтому смотрим журнал, а не
+   * только текущее сообщение: если имя уже есть, оно не меняется; если журнал
+   * старый и без имени, имя берётся из самого первого сообщения в нём.
+   */
+  ensureName() {
+    this.named = true;
+    const { name, firstText } = scanJournal(this.file);
+    if (name != null) {
+      this.meta = { name };
+      return;
+    }
+    const fresh = sessionName(firstText);
+    if (!fresh) return; // одни символы — имени нет, в списке будет начало сообщения
+    this.meta = { name: fresh };
+    fs.appendFileSync(this.file, JSON.stringify({ ts: Date.now(), entry: { kind: 'meta', meta: this.meta } }) + '\n', 'utf8');
   }
 
   static exists(id) {
@@ -71,7 +135,8 @@ class Session {
       }
     }
     const messages = entries.filter((e) => e.entry && e.entry.kind === 'message').map((e) => e.entry.message);
-    return { id, messages, entries };
+    const metaEntry = entries.find((e) => e.entry?.kind === 'meta' && typeof e.entry.meta?.name === 'string');
+    return { id, messages, entries, meta: { name: metaEntry ? metaEntry.entry.meta.name : null } };
   }
 
   /** Путь к журналу сессии; id проверяется, чтобы не выйти из папки сессий. */
@@ -111,19 +176,11 @@ class Session {
       .map((f) => {
         const file = path.join(SESSIONS_DIR, f);
         const st = fs.statSync(file);
-        let title = '';
-        try {
-          const first = fs.readFileSync(file, 'utf8').split('\n').find((l) => l.includes('"role":"user"'));
-          if (first) {
-            const msg = JSON.parse(first).entry.message;
-            const text = (msg.blocks || []).filter((b) => b.type === 'text').map((b) => b.text).join(' ');
-            title = text.slice(0, 60);
-          }
-        } catch {
-          // заголовок необязателен
-        }
+        const { name, firstText } = scanJournal(file);
+        const title = (firstText || '').slice(0, 60);
         const id = f.replace(/\.jsonl$/, '');
-        return { id, mtime: st.mtimeMs, title, pinned: pinned.has(id) };
+        // Старые журналы без записи meta: имя считается на лету, в журнал не пишется.
+        return { id, mtime: st.mtimeMs, name: name ?? sessionName(firstText), title, pinned: pinned.has(id) };
       })
       .sort((a, b) => Number(b.pinned) - Number(a.pinned) || b.mtime - a.mtime);
   }

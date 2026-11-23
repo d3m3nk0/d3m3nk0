@@ -72,7 +72,9 @@ function journal(home) {
         .readFileSync(path.join(dir, f), 'utf8')
         .split('\n')
         .filter(Boolean)
-        .map((l) => JSON.parse(l).entry.message)
+        .map((l) => JSON.parse(l).entry)
+        .filter((e) => e && e.kind === 'message') // как Session.load: meta и прочее — не сообщения
+        .map((e) => e.message)
     );
 }
 const assistantTexts = (messages) =>
@@ -418,6 +420,72 @@ async function main() {
     const m = t.match(/\n\[…пропущено ~(\d+) токенов из середины вывода; ниже приведён его конец…\]\n/);
     assert.ok(m, 'текст пометки изменился');
     assert.strictEqual(Number(m[1]), estimateTokens(long.slice(800, long.length - 400)));
+  });
+
+  /* --------------------- имя сессии (Пункт 8, без модели) --------------------- */
+
+  const { sessionName } = require('../src/core/session-name');
+  const userEntry = (text) => ({ kind: 'message', message: { role: 'user', blocks: [{ type: 'text', text }] } });
+
+  await check('имя сессии: обычные фразы, символы, коротко, длинно, кириллица, акценты', () => {
+    const cases = [
+      ['Привет! Помоги решить задачу на кручение вала', 'privet_pomogi_reshit_zadachu_na'], // кириллица → транслит, 5 слов
+      ['Fix bug #42!!! in edit_file() now', 'fix_bug_42_in_edit_file'], // спецсимволы убраны, «_» внутри слова остаётся
+      ['ok', 'ok'], // меньше 3 слов — как есть
+      ['Задача 5', 'zadacha_5'],
+      ['Щётка съела ёжика', 'shchetka_sela_ezhika'], // щ, ё, ъ
+      ['Résistance des matériaux, chapitre 3', 'resistance_des_materiaux_chapitre_3'], // диакритика → базовая буква
+      ['Їжак і ґанок', 'yizhak_i_ganok'], // украинские буквы
+      ['  много   пробелов\n\tи переносов  ', 'mnogo_probelov_i_perenosov'],
+      ['!!! ??? — …', null], // ни одного слова — имени нет
+    ];
+    for (const [text, want] of cases) assert.strictEqual(sessionName(text), want, `«${text}»`);
+    const long = sessionName(`${'длинноеслово'.repeat(10)} два три`);
+    assert.ok(long.length <= 60 && /^[a-z0-9_]+$/.test(long), `длинное: ${long}`);
+    assert.ok(/^[a-z0-9_]+$/.test(sessionName('Ω σ λ mixed ελληνικά текст')), 'остались символы вне a–z0–9_');
+  });
+
+  await check('имя сессии: задаётся первым сообщением и не меняется следующими', () => {
+    const s = new Session();
+    s.append(userEntry('Первое сообщение задаёт имя сессии'));
+    assert.strictEqual(s.meta.name, 'pervoe_soobshchenie_zadaet_imya_sessii');
+    s.append({ kind: 'message', message: { role: 'assistant', blocks: [{ type: 'text', text: 'ответ агента' }] } });
+    s.append(userEntry('Совсем другая тема второго сообщения'));
+    s.append({ kind: 'message', message: { role: 'user', blocks: [{ type: 'tool_result', id: 'x', content: 'результат' }] } });
+    assert.strictEqual(s.meta.name, 'pervoe_soobshchenie_zadaet_imya_sessii');
+    // Сессию открыли заново (как «загрузить сессию» в окне) и продолжили.
+    const again = new Session(s.id);
+    again.append(userEntry('Третье сообщение после перезапуска'));
+    assert.strictEqual(again.meta.name, 'pervoe_soobshchenie_zadaet_imya_sessii');
+    const raw = fs.readFileSync(s.file, 'utf8');
+    assert.strictEqual((raw.match(/"kind":"meta"/g) || []).length, 1, 'запись meta не одна');
+    assert.strictEqual(Session.load(s.id).meta.name, 'pervoe_soobshchenie_zadaet_imya_sessii');
+    assert.strictEqual(Session.list().find((x) => x.id === s.id).name, 'pervoe_soobshchenie_zadaet_imya_sessii');
+    // 5 сообщений (3 текста пользователя, ответ, результат инструмента) + 1 строка meta.
+    const loaded = Session.load(s.id);
+    assert.strictEqual(loaded.messages.length, 5, `сообщений: ${loaded.messages.length}`);
+    assert.strictEqual(loaded.entries.length, 6, 'в журнале не 6 строк');
+    assert.ok(loaded.messages.every((m) => m && m.role), 'meta попала в сообщения');
+  });
+
+  await check('имя сессии: старый журнал без meta — имя из первого сообщения, а не из нового', () => {
+    const id = `old-${Date.now()}`;
+    fs.writeFileSync(Session.fileOf(id), `${JSON.stringify({ ts: 1, entry: userEntry('Старая сессия про изгиб балки') })}\n`);
+    assert.strictEqual(Session.list().find((x) => x.id === id).name, 'staraya_sessiya_pro_izgib_balki', 'имя на лету');
+    assert.ok(!fs.readFileSync(Session.fileOf(id), 'utf8').includes('"meta"'), 'список записал в журнал');
+    const s = new Session(id);
+    s.append(userEntry('Новое сообщение совсем о другом'));
+    assert.strictEqual(s.meta.name, 'staraya_sessiya_pro_izgib_balki');
+  });
+
+  await check('имя сессии: сквозной через агента — второе сообщение имя не меняет', async () => {
+    const config = { ...loadConfig(), provider: 'openai', baseUrl: llm.url('stream'), apiKey: 'test', workdir: TMP_ROOT, mcpServers: {} };
+    const session = new Session();
+    const agent = new Agent({ config, session, mcp: null });
+    await agent.send('Как посчитать момент инерции трубы?');
+    await agent.send('А теперь про кручение');
+    assert.strictEqual(Session.load(session.id).meta.name, 'kak_poschitat_moment_inertsii_truby');
+    assert.strictEqual(Session.list().find((x) => x.id === session.id).name, 'kak_poschitat_moment_inertsii_truby');
   });
 
   // Сессии в HOME теста (D3M3NK0_HOME выставлен до загрузки ядра).
@@ -1149,7 +1217,9 @@ function fileMessages(file) {
     .readFileSync(file, 'utf8')
     .split('\n')
     .filter(Boolean)
-    .map((l) => JSON.parse(l).entry.message);
+    .map((l) => JSON.parse(l).entry)
+        .filter((e) => e && e.kind === 'message') // как Session.load: meta и прочее — не сообщения
+        .map((e) => e.message);
 }
 
 main()
