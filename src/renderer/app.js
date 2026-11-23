@@ -993,6 +993,7 @@ const profileMenu = $('profile-menu');
 
 async function refreshProfile() {
   const info = await window.d3.appInfo();
+  $('app-version').textContent = info.versionShort || ''; // из package.json, через главный процесс
   $('pf-name').textContent = info.name;
   $('pf-avatar').textContent = (info.name.trim()[0] || '?').toUpperCase();
   $('pf-sub').textContent = info.hasKey ? info.provider : `${info.provider} · нет ключа`;

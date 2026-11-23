@@ -147,6 +147,11 @@ const THEMES = new Set(['system', 'light', 'dark']);
 nativeTheme.themeSource = THEMES.has(config.uiTheme) ? config.uiTheme : 'system';
 const windowBg = () => (nativeTheme.shouldUseDarkColors ? '#12141a' : '#f7f7f5');
 
+// Версия — только в package.json: app.getVersion() читает её оттуда.
+// В сайдбаре и заголовке окна — коротко, «0.2» (major.minor).
+const VERSION = app.getVersion();
+const VERSION_SHORT = VERSION.split('.').slice(0, 2).join('.');
+
 function createWindow() {
   win = new BrowserWindow({
     width: 1280,
@@ -154,7 +159,7 @@ function createWindow() {
     minWidth: 900,
     minHeight: 600,
     backgroundColor: windowBg(),
-    title: 'd3m3nk0',
+    title: `d3m3nk0 ${VERSION_SHORT}`,
     webPreferences: {
       preload: path.join(__dirname, 'preload.js'),
       contextIsolation: true,
@@ -163,6 +168,8 @@ function createWindow() {
     },
   });
   win.loadFile(path.join(__dirname, '..', 'renderer', 'index.html'));
+  // <title> страницы иначе заменил бы заголовок окна с версией.
+  win.on('page-title-updated', (e) => e.preventDefault());
   win.on('closed', () => {
     win = null;
   });
@@ -401,7 +408,8 @@ ipcMain.handle('app:info', () => ({
   provider: live().activeProfileName || providerLabel(live()),
   // Профиль без ключа (локальная модель) — нормально, предупреждение «нет ключа» не нужно.
   hasKey: !!live().apiKey || !!live().activeProfileName,
-  version: app.getVersion(),
+  version: VERSION,
+  versionShort: VERSION_SHORT,
   electron: process.versions.electron,
   node: process.versions.node,
 }));

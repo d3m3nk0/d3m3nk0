@@ -10,6 +10,8 @@
  */
 
 const path = require('node:path');
+// Версия клиента для MCP-серверов — та же, что у приложения: только в package.json.
+const { version: APP_VERSION } = require('../../package.json');
 
 // Сколько ждать, пока сервер запустится и отдаст список инструментов.
 // REA с Ghidra стартует за секунды; 45 с — с большим запасом.
@@ -47,7 +49,7 @@ class McpManager {
       cwd: cfg.cwd || process.cwd(),
       stderr: 'pipe',
     });
-    const client = new Client({ name: 'd3m3nk0', version: '0.1.0' }, { capabilities: {} });
+    const client = new Client({ name: 'd3m3nk0', version: APP_VERSION }, { capabilities: {} });
     // Сервер, который запустился и молчит, иначе держал бы сборку агента вечно:
     // окно ждало бы «Сохранить» без конца. Предел — startupTimeoutMs в конфиге.
     const limitMs = Number(cfg.startupTimeoutMs) > 0 ? Number(cfg.startupTimeoutMs) : STARTUP_TIMEOUT_MS;

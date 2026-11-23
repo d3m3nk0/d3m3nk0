@@ -217,6 +217,17 @@ async function main() {
       assert.strictEqual(await evaluate('document.getElementById("input") != null'), true, 'нет поля ввода');
     });
 
+    await check('версия в сайдбаре — из package.json (major.minor)', async () => {
+      const short = require('../package.json').version.split('.').slice(0, 2).join('.');
+      let shown = '';
+      for (let i = 0; i < 20 && !shown; i++) {
+        shown = await evaluate(`document.getElementById('app-version').textContent`);
+        if (!shown) await sleep(150);
+      }
+      assert.strictEqual(shown, short, `в сайдбаре «${shown}», а в package.json ${short}`);
+      assert.strictEqual(await evaluate(`document.querySelector('.brand').textContent`), `d3m3nk0${short}`);
+    });
+
     // 1. Ctrl+V картинки: как настоящий скриншот — File без пути, только байты.
     let pastedFile = '';
     await check('Ctrl+V картинки → чип с превью, файл сохраняется во «Вложения»', async () => {
