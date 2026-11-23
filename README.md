@@ -302,7 +302,15 @@ API-ключ и сеть не нужны ни одному набору.
 npm test                  # test/smoke.js — встроенные инструменты, 13 проверок
 npm run test:mcp          # test/mcp-smoke.js — подключение MCP по конфигу из README
 npm run test:regression   # test/regression.js — стриминг, прерывания, сжатие, 62 проверки
+npm run test:window       # test/window-attachments.js — вложения в настоящем окне Electron
 ```
+
+- **`npm run test:window`** — единственный набор, который проверяет окно, а не
+  только ядро: поднимает Electron с отладочным портом, вставляет картинку через
+  `Ctrl+V`, перетаскивает файл, отправляет сообщение и читает, что оказалось в
+  пузыре и на диске. Своё `D3M3NK0_HOME` и своя рабочая папка во временном
+  каталоге; модель недоступна (`baseUrl` 127.0.0.1:9), поэтому ключ и лимит не
+  расходуются. Нужен рабочий стол; `D3M3NK0_NO_GUI=1` — пропустить.
 
 - **`npm test`** — инструменты `read_file`, `write_file`, `edit_file`,
   `list_dir`, `glob_search`, `grep_search`, `run_command`, запрет выхода за

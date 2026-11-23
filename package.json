@@ -9,7 +9,8 @@
     "cli": "node scripts/launch.js cli",
     "test": "node test/smoke.js",
     "test:mcp": "node test/mcp-smoke.js",
-    "test:regression": "node test/regression.js"
+    "test:regression": "node test/regression.js",
+    "test:window": "node test/window-attachments.js"
   },
   "license": "MIT",
   "dependencies": {
