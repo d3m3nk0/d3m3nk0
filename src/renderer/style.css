@@ -546,3 +546,10 @@ input.switch:focus-visible { outline: 2px solid var(--accent); outline-offset: 2
   line-height: 1.5;
   tab-size: 2;
 }
+
+/* Ссылки на каталоги плагинов */
+.plugin-browse { border: 1px dashed #35405a; border-radius: 10px; padding: 10px 12px; display: flex; flex-direction: column; gap: 6px; }
+.pb-title { font-size: 13px; color: var(--text); }
+.pb-links { display: flex; flex-wrap: wrap; gap: 6px 16px; }
+.pb-links a { color: var(--accent); font-size: 13px; text-decoration: none; }
+.pb-links a:hover { text-decoration: underline; }

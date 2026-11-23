@@ -835,3 +835,16 @@ setSidebarWidth(savedSidebar(), false);
   showEmptyState();
   input.focus();
 })();
+
+/* --------------------------- внешние ссылки ---------------------------- */
+
+// Любая http(s)-ссылка в окне открывается в браузере, а не внутри агента.
+// Ссылки из ответов модели уже обработаны в markdown.js (defaultPrevented).
+document.addEventListener('click', (e) => {
+  const a = e.target.closest?.('a[href]');
+  if (!a || e.defaultPrevented) return;
+  const href = a.getAttribute('href');
+  if (!/^https?:\/\//i.test(href)) return;
+  e.preventDefault();
+  window.d3.openExternal(href);
+});
