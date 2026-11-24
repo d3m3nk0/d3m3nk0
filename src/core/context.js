@@ -12,7 +12,6 @@
 
 const { estimateTokens } = require('./providers');
 
-const CHARS_PER_TOKEN = 4; // та же единица, что в estimateTokens
 const HEAD_TOKENS = 200; // сколько оставить с начала результата
 const TAIL_TOKENS = 100; // и с конца: там бывают итоги, ошибки, последние строки
 
@@ -22,9 +21,14 @@ const TAIL_TOKENS = 100; // и с конца: там бывают итоги, о
  */
 function truncateToolResult(text, limit) {
   const s = String(text ?? '');
-  if (!limit || estimateTokens(s) <= Math.max(limit, HEAD_TOKENS + TAIL_TOKENS)) return s;
-  const headEnd = HEAD_TOKENS * CHARS_PER_TOKEN;
-  const tailStart = s.length - TAIL_TOKENS * CHARS_PER_TOKEN;
+  const tokens = estimateTokens(s);
+  if (!limit || tokens <= Math.max(limit, HEAD_TOKENS + TAIL_TOKENS)) return s;
+  // Ширина символа в токенах зависит от языка, поэтому берём её из той же
+  // оценки, а не из жёсткого «4»: иначе для кириллицы «200 токенов» начала
+  // весили бы вдвое больше, чем предполагает limit.
+  const charsPerToken = s.length / tokens;
+  const headEnd = Math.round(HEAD_TOKENS * charsPerToken);
+  const tailStart = s.length - Math.round(TAIL_TOKENS * charsPerToken);
   const cut = estimateTokens(s.slice(headEnd, tailStart));
   // Пометка явно говорит, что пропущена середина, а конец настоящий: прежний
   // текст «обрезано: ещё N» модель читала как обрыв вывода в конце.

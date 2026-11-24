@@ -123,7 +123,7 @@ async function doBuildAgent({ history = [] } = {}) {
       emit({ type: 'info', message: `MCP ${r.server}: ошибка — ${r.error}` });
       continue;
     }
-    const kTokens = Math.ceil(r.chars / 4 / 1000);
+    const kTokens = Math.ceil(r.tokens / 1000);
     emit({
       type: 'info',
       message:

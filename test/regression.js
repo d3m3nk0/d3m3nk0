@@ -256,6 +256,16 @@ async function main() {
 
   /* 4. Сжатие контекста ------------------------------------------------------ */
 
+  await check('estimateTokens: русский текст вдвое дороже английского той же длины', () => {
+    const ru = 'привет мир как дела';
+    const en = 'hello world how are';
+    assert.strictEqual(ru.length, en.length, 'тексты должны быть одной длины');
+    assert.strictEqual(estimateTokens(en), 5);
+    assert.strictEqual(estimateTokens(ru), 10, 'кириллица должна давать ровно вдвое больше');
+    // Ровно 30% не-ASCII — ещё не «больше 30%», остаётся символы / 4.
+    assert.strictEqual(estimateTokens('abcdefgааа'), 3);
+  });
+
   const long = Array.from({ length: 300 }, (_, i) => `строка ${String(i).padStart(3, '0')} ${'x'.repeat(20)}`).join('\n');
 
   await check('truncateToolResult: начало и конец целы, середина вырезана', () => {

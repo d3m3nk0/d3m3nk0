@@ -435,8 +435,21 @@ async function runTurn(opts) {
 // до 1600 px это порядка полутора-двух тысяч токенов.
 const IMAGE_TOKENS = 1600;
 
+// Токенизаторы режут латиницу примерно на 4 символа за токен, а кириллицу —
+// вдвое плотнее, около 2 символов. Поэтому оценка зависит от доли не-ASCII:
+// если она больше 30%, считаем символы / 2, иначе символы / 4.
+const NON_ASCII_SHARE = 0.3;
+const ASCII_CHARS_PER_TOKEN = 4;
+const WIDE_CHARS_PER_TOKEN = 2;
+
 function estimateTokens(text) {
-  return Math.ceil(String(text).length / 4);
+  const s = String(text);
+  if (!s.length) return 0;
+  let nonAscii = 0;
+  // Считаем по code units — той же единице, в которой измеряется s.length.
+  for (let i = 0; i < s.length; i++) if (s.charCodeAt(i) > 0x7f) nonAscii++;
+  const charsPerToken = nonAscii / s.length > NON_ASCII_SHARE ? WIDE_CHARS_PER_TOKEN : ASCII_CHARS_PER_TOKEN;
+  return Math.ceil(s.length / charsPerToken);
 }
 
 function estimateMessagesTokens(messages, system) {

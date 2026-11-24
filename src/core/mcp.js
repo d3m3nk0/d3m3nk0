@@ -12,6 +12,7 @@
 const path = require('node:path');
 // Версия клиента для MCP-серверов — та же, что у приложения: только в package.json.
 const { version: APP_VERSION } = require('../../package.json');
+const { estimateTokens } = require('./providers');
 
 // Сколько ждать, пока сервер запустится и отдаст список инструментов.
 // REA с Ghidra стартует за секунды; 45 с — с большим запасом.
@@ -103,8 +104,8 @@ class McpManager {
       try {
         const tools = await this.connect(name, cfg);
         const total = this.servers.get(name)?.total ?? tools.length;
-        const chars = JSON.stringify(tools).length;
-        report.push({ server: name, ok: true, tools: tools.length, total, chars });
+        const schemas = JSON.stringify(tools);
+        report.push({ server: name, ok: true, tools: tools.length, total, chars: schemas.length, tokens: estimateTokens(schemas) });
       } catch (e) {
         report.push({ server: name, ok: false, error: String(e.message || e) });
       }
