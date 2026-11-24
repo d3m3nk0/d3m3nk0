@@ -18,6 +18,7 @@ const path = require('node:path');
 const { runTurn, estimateMessagesTokens } = require('./providers');
 const { runWithRetry } = require('./resilience');
 const { isAlwaysAllowed, suggestRule, sameRule } = require('./permissions');
+const { isDangerous } = require('./dangerous');
 const { toolSchemas, runTool } = require('./tools');
 const { prepareForRequest, toolSchemaTokens } = require('./context');
 
@@ -143,7 +144,9 @@ function withoutImageData(message) {
   };
 }
 
-function needsApproval(mode, toolName, input, rules) {
+function needsApproval(mode, toolName, input, rules, workdir) {
+  // Опасный вызов спрашивает всегда: ни yolo, ни «Разрешать всегда» его не снимают.
+  if (isDangerous(toolName, input, workdir)) return true;
   if (mode === 'yolo') return false;
   if (isAlwaysAllowed(toolName, input, rules)) return false; // «Разрешать всегда»
   if (mode === 'allow-edits') return toolName === 'run_command' || toolName.startsWith('mcp__');
@@ -319,8 +322,11 @@ class Agent {
 
         const results = [];
         for (const call of toolUses) {
-          const suggestion = suggestRule(call.name, call.input);
-          const answer = needsApproval(this.config.permissionMode, call.name, call.input, this.config.alwaysAllow)
+          // Для опасного вызова «Разрешать всегда» не предлагаем: правило
+          // всё равно не сработает — гейт спрашивает раньше правил.
+          const danger = isDangerous(call.name, call.input, this.config.workdir);
+          const suggestion = danger ? null : suggestRule(call.name, call.input);
+          const answer = needsApproval(this.config.permissionMode, call.name, call.input, this.config.alwaysAllow, this.config.workdir)
             ? await this.askPermission({ id: call.id, name: call.name, input: call.input, always: suggestion?.label || null })
             : true;
           // 'always' — «Разрешать всегда»: правило запоминается и действует дальше.
